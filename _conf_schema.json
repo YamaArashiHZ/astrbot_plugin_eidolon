@@ -1,0 +1,62 @@
+{
+  "api_provider": {
+    "description": "生图 API 提供方",
+    "type": "string",
+    "options": ["seedream", "gemini", "custom"],
+    "default": "seedream",
+    "hint": "seedream=首选(火山方舟,国内直连);gemini=备选(需代理);custom=自定义"
+  },
+  "seedream_api_key": {
+    "description": "火山方舟 API Key(console.volcengine.com/ark)",
+    "type": "string",
+    "obvious_hint": true
+  },
+  "seedream_model": {
+    "description": "Seedream 模型 ID / 推理接入点 ID",
+    "type": "string",
+    "default": "doubao-seedream-5-0-pro-xxxxxx",
+    "hint": "以控制台开通后显示的 model id 为准"
+  },
+  "gemini_api_key": {
+    "description": "Gemini API Key(使用 gemini 预设时填写)",
+    "type": "string"
+  },
+  "gemini_model": {
+    "description": "Gemini 模型",
+    "type": "string",
+    "options": ["gemini-3.1-flash-lite-image", "gemini-3.1-flash-image", "gemini-3-pro-image"],
+    "default": "gemini-3.1-flash-lite-image"
+  },
+  "enable_proxy": { "description": "是否启用 HTTP 代理", "type": "bool", "default": true },
+  "proxy": { "description": "HTTP 代理地址", "type": "string", "default": "http://127.0.0.1:7897" },
+
+  "custom_base_url": { "description": "自定义 API base_url", "type": "string", "hint": "openai_compatible 填到 /v1 或 /api/v3;gemini_native 填到域名根" },
+  "custom_api_key": { "description": "自定义 API Key(留空复用上方 key)", "type": "string" },
+  "custom_model": { "description": "自定义模型名", "type": "string", "default": "gpt-image-1" },
+  "custom_protocol": {
+    "description": "自定义 API 协议模板",
+    "type": "string",
+    "options": ["openai_compatible", "gemini_native"],
+    "default": "openai_compatible"
+  },
+
+  "aspect_ratio": { "description": "默认宽高比", "type": "string", "options": ["1:1", "16:9", "9:16", "4:3", "3:4"], "default": "1:1" },
+  "image_size": { "description": "默认分辨率(仅 Gemini 生效)", "type": "string", "options": ["1K", "2K", "4K"], "default": "1K" },
+  "max_num": { "description": "单次最多生成张数", "type": "int", "default": 4 },
+  "cooldown_seconds": { "description": "群内生成冷却(秒)", "type": "int", "default": 30 },
+
+  "total_limit": { "description": "每日总限额(张,0=不限)", "type": "int", "default": 200 },
+  "per_user_limit": { "description": "每人每日限额(张,0=不限)", "type": "int", "default": 0 },
+  "admin_ignore_limit": { "description": "管理员无视限额(群主/管理员)", "type": "bool", "default": true },
+
+  "request_timeout": { "description": "API 请求超时(秒)", "type": "int", "default": 90 },
+
+  "enable_nl_trigger": { "description": "群内 @机器人 自然语言直接生图(可选项)", "type": "bool", "default": false },
+  "nl_min_prompt_len": { "description": "自然语言触发最小提示词字数", "type": "int", "default": 5 },
+
+  "enable_prompt_enhance": { "description": "生图前用 LLM 润色提示词(可选项)", "type": "bool", "default": false },
+  "enhance_lang": { "description": "润色输出语言", "type": "string", "options": ["zh", "en"], "default": "zh", "hint": "Seedream 中文友好建议 zh;Gemini 建议 en" },
+  "enhance_llm_base_url": { "description": "润色 LLM base_url(OpenAI 兼容,留空用方舟)", "type": "string" },
+  "enhance_llm_api_key": { "description": "润色 LLM Key(留空复用主 key)", "type": "string" },
+  "enhance_llm_model": { "description": "润色 LLM 模型", "type": "string", "default": "doubao-seedream-5-0-pro", "hint": "Seedream 场景填豆包文本模型(以控制台为准);Gemini 场景可填 gemini-3.1-flash-lite" }
+}

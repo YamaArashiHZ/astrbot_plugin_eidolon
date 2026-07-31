@@ -1,0 +1,9 @@
+name: astrbot_plugin_eidolon
+desc: 群文生图插件:首选 Seedream 5.0 Pro(火山方舟),备选 Gemini Nano Banana,支持自定义 API(base_url/api_key),支持指令与 @机器人 自然语言触发、三级限额、LLM 提示词润色
+short_desc: QQ 群文生图(Seedream 5.0 Pro 首选)
+author: your_name
+version: 3.0.0
+repo: https://github.com/your_name/astrbot_plugin_eidolon
+support_platforms:
+  - aiocqhttp
+astrbot_version: ">=4.16,<5"
