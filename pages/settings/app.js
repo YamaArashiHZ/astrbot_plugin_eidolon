@@ -24,6 +24,7 @@ const GROUP_FIELDS = {
 let groupValues = {}; // 当前分段选择器的值
 let toastTimer = null;
 let aboutLoaded = false;
+let confirmResolve = null;
 
 // ---------- 主题 ----------
 function applyTheme(ctx) {
@@ -38,6 +39,28 @@ function toast(msg, isErr = false) {
   el.className = "toast show" + (isErr ? " err" : "");
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => (el.className = "toast"), 2600);
+}
+
+function askConfirm({ title, message, confirmText = "确认", danger = false }) {
+  const modal = $("confirm-modal");
+  $("confirm-title").textContent = title;
+  $("confirm-message").textContent = message;
+  $("confirm-ok").textContent = confirmText;
+  $("confirm-ok").className = "btn " + (danger ? "danger solid" : "primary");
+  $("confirm-mark").classList.toggle("danger", danger);
+  modal.classList.add("show");
+  modal.setAttribute("aria-hidden", "false");
+  $("confirm-cancel").focus();
+  return new Promise((resolve) => { confirmResolve = resolve; });
+}
+
+function closeConfirm(result) {
+  if (!confirmResolve) return;
+  const resolve = confirmResolve;
+  confirmResolve = null;
+  $("confirm-modal").classList.remove("show");
+  $("confirm-modal").setAttribute("aria-hidden", "true");
+  resolve(result);
 }
 
 function escapeHtml(s) {
@@ -214,16 +237,25 @@ async function testGen() {
 let quotaSort = "today";
 
 async function loadQuota() {
+  const btn = $("btn-quota-refresh");
+  const oldText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "刷新中…";
   try {
     const d = await bridge.apiGet("quota-detail");
-    $("sum-total-limit").textContent = d.total_limit > 0 ? d.total_limit : "不限";
-    $("sum-total-used").textContent = d.total_used;
+    $("sum-total-limit").textContent = `${d.total_used} / ${d.total_limit > 0 ? d.total_limit : "不限"}`;
+    $("sum-total-used").textContent = d.total_generated ?? 0;
     $("sum-users").textContent = (d.users || []).length;
     $("sum-per-limit").textContent = d.per_user_limit > 0 ? d.per_user_limit : "不限";
     renderQuotaList(d);
+    toast("配额数据已刷新 ✓");
   } catch (e) {
     $("quota-list").innerHTML = '<div class="empty">加载失败,请稍后重试</div>';
+    toast("配额刷新失败: " + (e.message || e), true);
     console.error("load quota:", e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = oldText;
   }
 }
 
@@ -247,42 +279,64 @@ function renderQuotaList(d) {
     const admin = u.is_admin
       ? '<span class="admin-badge">管理员</span>'
       : "";
-    const used = quotaSort === "total" ? u.used_total : u.used_today;
-    const pct = perLimit > 0 ? Math.min(100, Math.round((used / perLimit) * 100)) : 0;
+    const pct = perLimit > 0 ? Math.min(100, Math.round((u.used_today / perLimit) * 100)) : 0;
+    const hideProgress = u.is_admin && d.admin_ignore_limit;
     return `
       <div class="quota-row">
-        <div class="quota-bar"><i style="height:${pct}%"></i></div>
         <img class="avatar" src="https://q1.qlogo.cn/g?b=qq&nk=${qq}&s=100"
              alt="" loading="lazy" onerror="this.style.visibility='hidden'" />
         <div class="u-info">
           <b>${name}${admin}</b>
           <span>QQ: ${qq}</span>
         </div>
+        <div class="quota-progress${hideProgress ? " hidden" : ""}" title="${hideProgress ? "管理员不受配额限制" : `今日使用 ${u.used_today}${perLimit > 0 ? ` / ${perLimit}` : ""}`}">
+          <i style="width:${pct}%"></i>
+        </div>
         <div class="u-nums">
           <span class="u-today">今日 <b>${u.used_today}</b></span>
           <span>总计 <b>${u.used_total}</b></span>
         </div>
-        <button class="btn ghost small btn-reset-user" data-qq="${qq}">重置</button>
+        <div class="u-actions">
+          <button class="btn ghost small btn-reset-user-today" data-qq="${qq}">重置今日</button>
+          <button class="btn danger small btn-reset-user-all" data-qq="${qq}">重置全部</button>
+        </div>
       </div>`;
   }).join("");
-  for (const btn of list.querySelectorAll(".btn-reset-user")) {
-    btn.addEventListener("click", () => resetUserQuota(btn.dataset.qq));
+  for (const btn of list.querySelectorAll(".btn-reset-user-today")) {
+    btn.addEventListener("click", () => resetUserQuota(btn.dataset.qq, false));
+  }
+  for (const btn of list.querySelectorAll(".btn-reset-user-all")) {
+    btn.addEventListener("click", () => resetUserQuota(btn.dataset.qq, true));
   }
 }
 
-async function resetUserQuota(qq) {
-  if (!confirm(`确定重置 QQ ${qq} 的今日与总使用量吗?`)) return;
+async function resetUserQuota(qq, resetAll) {
+  const confirmed = await askConfirm({
+    title: resetAll ? "完全重置用户记录" : "重置用户今日配额",
+    message: resetAll
+      ? `QQ ${qq} 的今日使用量和历史总使用量都将清零，此操作无法恢复。`
+      : `QQ ${qq} 的今日使用量和今日限额计数将清零，历史总使用量会保留。`,
+    confirmText: resetAll ? "重置全部" : "重置今日",
+    danger: resetAll,
+  });
+  if (!confirmed) return;
   try {
-    await bridge.apiPost("quota/reset-user", { qq });
-    toast("已重置该用户配额 ✓");
+    await bridge.apiPost(resetAll ? "quota/reset-user" : "quota/reset-user-today", { qq });
+    toast(resetAll ? "已重置该用户全部记录 ✓" : "已重置该用户今日配额 ✓");
     loadQuota();
+    loadStats();
   } catch (e) {
     toast("重置失败: " + (e.message || e), true);
   }
 }
 
 async function resetTodayQuota() {
-  if (!confirm("仅重置今日配额使用?\n\n所有人的「今日使用量」将清零(今日限额计数同步重置),历史「总使用量」记录保留。")) return;
+  const confirmed = await askConfirm({
+    title: "重置今日配额",
+    message: "所有人的今日使用量和今日限额计数将清零，历史总使用量记录会保留。",
+    confirmText: "重置今日配额",
+  });
+  if (!confirmed) return;
   const btn = $("btn-quota-reset-today");
   btn.disabled = true;
   try {
@@ -298,7 +352,13 @@ async function resetTodayQuota() {
 }
 
 async function resetAllQuota() {
-  if (!confirm("完全重置?\n\n今日使用量与所有人的历史总使用量记录将全部清零,且无法恢复。确定继续吗?")) return;
+  const confirmed = await askConfirm({
+    title: "完全重置所有记录",
+    message: "今日使用量和所有人的历史总使用量将全部清零，此操作无法恢复。",
+    confirmText: "完全重置",
+    danger: true,
+  });
+  if (!confirmed) return;
   const btn = $("btn-quota-reset-all");
   btn.disabled = true;
   try {
@@ -388,6 +448,14 @@ function bindEvents() {
   $("btn-quota-refresh").addEventListener("click", loadQuota);
   $("btn-quota-reset-today").addEventListener("click", resetTodayQuota);
   $("btn-quota-reset-all").addEventListener("click", resetAllQuota);
+  $("confirm-cancel").addEventListener("click", () => closeConfirm(false));
+  $("confirm-ok").addEventListener("click", () => closeConfirm(true));
+  $("confirm-modal").addEventListener("click", (e) => {
+    if (e.target === $("confirm-modal")) closeConfirm(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeConfirm(false);
+  });
   $("quota_sort_group").addEventListener("click", (e) => {
     const btn = e.target.closest("[data-val]");
     if (!btn) return;

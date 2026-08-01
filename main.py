@@ -129,7 +129,9 @@ class EidolonPlugin(Star):
         context.register_web_api(
             f"/{plugin_name}/quota/reset-all", self.web_quota_reset_all, ["POST"], "完全重置(清空全部记录)")
         context.register_web_api(
-            f"/{plugin_name}/quota/reset-user", self.web_quota_reset_user, ["POST"], "重置指定用户配额")
+            f"/{plugin_name}/quota/reset-user-today", self.web_quota_reset_user_today, ["POST"], "重置指定用户今日配额")
+        context.register_web_api(
+            f"/{plugin_name}/quota/reset-user", self.web_quota_reset_user, ["POST"], "完全重置指定用户记录")
         context.register_web_api(
             f"/{plugin_name}/about", self.web_get_about, ["GET"], "获取插件信息")
 
@@ -249,6 +251,7 @@ class EidolonPlugin(Star):
         return json_response({
             "total_limit": int(self.config.get("total_limit", 0)),
             "total_used": self._total_count,
+            "total_generated": sum(self._total_usage.values()),
             "per_user_limit": int(self.config.get("per_user_limit", 0)),
         })
 
@@ -353,6 +356,7 @@ class EidolonPlugin(Star):
             "total_limit": int(self.config.get("total_limit", 0)),
             "total_used": self._total_count,
             "per_user_limit": int(self.config.get("per_user_limit", 0)),
+            "admin_ignore_limit": bool(self.config.get("admin_ignore_limit", True)),
             "admins": sorted(admins),
             "users": users,
         })
@@ -380,17 +384,35 @@ class EidolonPlugin(Star):
         logger.info("全部记录已完全重置(来自插件页面)")
         return json_response({"ok": True})
 
-    async def web_quota_reset_user(self):
-        """重置指定用户的今日与总使用量"""
+    async def web_quota_reset_user_today(self):
+        """仅重置指定用户的今日使用量,保留历史累计"""
         payload = await request.json(default={})
         qq = str(payload.get("qq") or "").strip()
         if not qq:
             return error_response("缺少 qq 参数", status_code=400)
+        counted_today = self._user_counts.get(qq, 0)
+        self._user_counts.pop(qq, None)
+        self._usage_counts.pop(qq, None)
+        self._last_gen_at.pop(qq, None)
+        self._total_count = max(0, self._total_count - counted_today)
+        self._save_usage()
+        logger.info(f"已重置用户今日配额: {qq}(来自插件页面)")
+        return json_response({"ok": True})
+
+    async def web_quota_reset_user(self):
+        """完全重置指定用户的今日与历史累计使用量"""
+        payload = await request.json(default={})
+        qq = str(payload.get("qq") or "").strip()
+        if not qq:
+            return error_response("缺少 qq 参数", status_code=400)
+        counted_today = self._user_counts.get(qq, 0)
         self._user_counts.pop(qq, None)
         self._usage_counts.pop(qq, None)
         self._total_usage.pop(qq, None)
+        self._last_gen_at.pop(qq, None)
+        self._total_count = max(0, self._total_count - counted_today)
         self._save_usage()
-        logger.info(f"已重置用户配额: {qq}(来自插件页面)")
+        logger.info(f"已完全重置用户记录: {qq}(来自插件页面)")
         return json_response({"ok": True})
 
     async def web_get_about(self):
@@ -470,12 +492,13 @@ class EidolonPlugin(Star):
         # 今日使用量与历史累计都记录(含管理员,用于配额页展示)
         self._usage_counts[sender_id] = self._usage_counts.get(sender_id, 0) + num
         self._total_usage[sender_id] = self._total_usage.get(sender_id, 0) + num
-        self._save_usage()
         if is_admin and self.config.get("admin_ignore_limit", True):
+            self._save_usage()
             return
         self._last_gen_at[group_id] = time.time()
         self._total_count += num
         self._user_counts[sender_id] = self._user_counts.get(sender_id, 0) + num
+        self._save_usage()
 
     def _save_image(self, img_b64: str, mime: str = "image/png") -> str:
         ext = EXT_BY_MIME.get(mime, "png")
@@ -682,6 +705,7 @@ class EidolonPlugin(Star):
             logger.info(f"生图 group={group_id} sender={sender_id} prompt={prompt!r}")
             yield event.plain_result(
                 "🎨 收到,正在生成图片,请稍等(高分辨率或长提示词可能需要 1~3 分钟)...")
+            success_count = 0
             try:
                 if self.config.get("enable_prompt_enhance", False):
                     try:
@@ -696,13 +720,15 @@ class EidolonPlugin(Star):
                 for _ in range(num):
                     started = time.time()
                     path, _mime = await self._generate_one(prompt, aspect, image_size)
+                    success_count += 1
                     logger.info(f"出图成功 耗时 {time.time() - started:.1f}s 文件={path}")
                     yield event.image_result(path)
             except Exception as e:
                 logger.exception(f"生图异常: {e}")
                 yield event.plain_result(f"❌ 生图失败: {e}")
             finally:
-                self._apply_quota(group_id, sender_id, num, is_admin)
+                if success_count > 0:
+                    self._apply_quota(group_id, sender_id, success_count, is_admin)
 
     # ------------------------------------------------------------------
     # 触发方式一:指令

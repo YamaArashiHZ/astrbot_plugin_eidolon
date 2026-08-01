@@ -270,8 +270,8 @@
         </header>
         <section class="card">
           <div class="card-body quota-summary" id="quota-summary">
-            <div class="sum-item"><span>今日总限额</span><b id="sum-total-limit">–</b></div>
-            <div class="sum-item"><span>已用(计入限额)</span><b id="sum-total-used">–</b></div>
+            <div class="sum-item"><span>今日总限额</span><b id="sum-total-limit">– / –</b></div>
+            <div class="sum-item"><span>累计生成图片</span><b id="sum-total-used">–</b></div>
             <div class="sum-item"><span>使用人数</span><b id="sum-users">–</b></div>
             <div class="sum-item"><span>每人限额</span><b id="sum-per-limit">–</b></div>
           </div>
@@ -339,9 +339,11 @@
                   <button class="btn ghost small" id="about-repo-btn">复制链接</button>
                 </div>
                 <div class="link-card">
-                  <span class="link-icon">
-                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9a.5.5 0 01.8-.4l6 4.5a.5.5 0 010 .8l-6 4.5a.5.5 0 01-.8-.4z"/>
+                  <span class="link-icon ark-icon">
+                    <svg viewBox="0 0 42 32" width="28" height="22" role="img" aria-label="火山方舟">
+                      <path fill="#00d4d8" d="M0 31.2 10.9 5.5l5.4 12.8-5.5 12.9z"/>
+                      <path fill="#1478ff" d="M10.8 31.2 21 0l10.2 31.2z"/>
+                      <path fill="#4355f6" d="m23.6 8 5.3 13.5 2.3 9.7H42z"/>
                     </svg>
                   </span>
                   <div class="link-text">
@@ -372,6 +374,20 @@
         </section>
       </section>
     </main>
+
+    <div class="modal-backdrop" id="confirm-modal" aria-hidden="true">
+      <div class="confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+        <div class="confirm-mark" id="confirm-mark">!</div>
+        <div class="confirm-copy">
+          <h2 id="confirm-title">确认操作</h2>
+          <p id="confirm-message"></p>
+        </div>
+        <div class="confirm-actions">
+          <button type="button" class="btn ghost" id="confirm-cancel">取消</button>
+          <button type="button" class="btn primary" id="confirm-ok">确认</button>
+        </div>
+      </div>
+    </div>
 
     <div class="toast" id="toast"></div>
     <script type="module" src="./app.js"></script>
