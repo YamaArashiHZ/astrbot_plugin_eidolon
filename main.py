@@ -15,6 +15,7 @@ AstrBot 插件:群文生图(仅适配火山方舟 Seedream 5.0 Pro)
 """
 import asyncio
 import base64
+import json
 import re
 import time
 import uuid
@@ -23,17 +24,44 @@ from pathlib import Path
 import httpx
 
 import astrbot.api.message_components as Comp
-from astrbot.api import AstrBotConfig, logger
+from astrbot.api import logger
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star
+from astrbot.api.web import error_response, json_response, request
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 ARK_BASE = "https://ark.cn-beijing.volces.com/api/v3"          # 火山方舟(Seedream)
+PLUGIN_NAME = "astrbot_plugin_eidolon"
 VALID_ASPECTS = {"1:1", "16:9", "9:16", "4:3", "3:4"}
 VALID_SIZES = {"1K", "1.5K", "2K"}                            # Seedream 5.0 pro 档位
 EXT_BY_MIME = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 FLAG_RE = re.compile(r"(?:^|\s)-(n|a|s)\s+(\S+)")
 SAFETY_SUFFIX = ", high quality, detailed, safe for work, no text watermark"
+
+# 插件默认配置(插件页面编辑,存于 data/plugin_data/<plugin>/config.json)
+DEFAULT_CONFIG = {
+    "seedream_api_key": "",
+    "seedream_model": "doubao-seedream-5-0-pro",
+    "enable_proxy": True,
+    "proxy": "http://127.0.0.1:7897",
+    "aspect_ratio": "1:1",
+    "image_size": "2K",
+    "output_format": "png",
+    "watermark": True,
+    "max_num": 4,
+    "cooldown_seconds": 30,
+    "total_limit": 200,
+    "per_user_limit": 0,
+    "admin_ignore_limit": True,
+    "request_timeout": 90,
+    "enable_nl_trigger": False,
+    "nl_min_prompt_len": 5,
+    "enable_prompt_enhance": False,
+    "enhance_lang": "zh",
+    "enhance_llm_base_url": "",
+    "enhance_llm_api_key": "",
+    "enhance_llm_model": "doubao-1-5-pro",
+}
 
 # 宽高比 -> prompt 自然语言描述(方式1:模型据描述判断生成尺寸)
 ASPECT_DESC = {
@@ -57,18 +85,104 @@ ENHANCE_SYSTEM_PROMPT_EN = (
 
 
 class EidolonPlugin(Star):
-    def __init__(self, context: Context, config: AstrBotConfig):
+    def __init__(self, context: Context, config: dict | None = None):
         super().__init__(context)
-        self.config = config
-        plugin_name = getattr(self, "name", "astrbot_plugin_eidolon")
-        self.image_dir = Path(get_astrbot_data_path()) / "plugin_data" / plugin_name
-        self.image_dir.mkdir(parents=True, exist_ok=True)
+        plugin_name = getattr(self, "name", PLUGIN_NAME)
+        self.plugin_name = plugin_name
+        self.data_dir = Path(get_astrbot_data_path()) / "plugin_data" / plugin_name
+        self.image_dir = self.data_dir
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.config_path = self.data_dir / "config.json"
+        self.config = self._load_config()
 
         self._group_locks: dict[str, asyncio.Lock] = {}
         self._last_gen_at: dict[str, float] = {}
         self._total_count = 0
         self._user_counts: dict[str, int] = {}
         self._today = ""
+
+        # 插件页面后端 API
+        context.register_web_api(
+            f"/{plugin_name}/config", self.web_get_config, ["GET"], "获取插件配置")
+        context.register_web_api(
+            f"/{plugin_name}/config/save", self.web_save_config, ["POST"], "保存插件配置")
+        context.register_web_api(
+            f"/{plugin_name}/stats", self.web_get_stats, ["GET"], "获取今日用量")
+        context.register_web_api(
+            f"/{plugin_name}/test", self.web_test_key, ["POST"], "测试 API Key 连通性")
+
+    # ------------------------------------------------------------------
+    # 配置管理(插件页面读写,持久化到 data/plugin_data/<plugin>/config.json)
+    # ------------------------------------------------------------------
+    def _load_config(self) -> dict:
+        cfg = dict(DEFAULT_CONFIG)
+        try:
+            if self.config_path.exists():
+                saved = json.loads(self.config_path.read_text(encoding="utf-8"))
+                for k in DEFAULT_CONFIG:
+                    if k in saved:
+                        cfg[k] = saved[k]
+        except Exception as e:
+            logger.warning(f"配置读取失败,使用默认配置: {e}")
+        return cfg
+
+    def _save_config(self, data: dict):
+        for k, v in data.items():
+            if k in DEFAULT_CONFIG:
+                self.config[k] = v
+        self.config_path.write_text(
+            json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # 插件页面 Web API
+    # ------------------------------------------------------------------
+    async def web_get_config(self):
+        return json_response(self.config)
+
+    async def web_save_config(self):
+        payload = await request.json(default={})
+        if not isinstance(payload, dict):
+            return error_response("invalid payload", status_code=400)
+        unknown = [k for k in payload if k not in DEFAULT_CONFIG]
+        if unknown:
+            return error_response(f"unknown config keys: {unknown}", status_code=400)
+        try:
+            self._save_config(payload)
+        except Exception as e:
+            logger.error(f"配置保存失败: {e}")
+            return error_response(f"保存失败: {e}", status_code=500)
+        logger.info("插件配置已更新(来自插件页面)")
+        return json_response({"saved": True})
+
+    async def web_get_stats(self):
+        self._reset_day_if_needed()
+        return json_response({
+            "total_limit": int(self.config.get("total_limit", 0)),
+            "total_used": self._total_count,
+            "per_user_limit": int(self.config.get("per_user_limit", 0)),
+        })
+
+    async def web_test_key(self):
+        """测试火山方舟 API Key:GET /models 验证鉴权"""
+        payload = await request.json(default={})
+        key = (payload.get("key") or "").strip() or self._api_key()
+        if not key:
+            return error_response("API Key 为空", status_code=400)
+        try:
+            async with httpx.AsyncClient(proxy=self._proxy(),
+                                         timeout=httpx.Timeout(15.0)) as client:
+                resp = await client.get(
+                    self._join(ARK_BASE, "models"),
+                    headers={"Authorization": f"Bearer {key}"})
+            if resp.status_code == 200:
+                return json_response({"ok": True, "message": "连接成功,API Key 有效"})
+            body = resp.text[:200]
+            return error_response(f"鉴权失败({resp.status_code}): {body}",
+                                  status_code=resp.status_code)
+        except httpx.ProxyError:
+            return error_response("无法连接代理,请检查 proxy 配置", status_code=400)
+        except httpx.HTTPError as e:
+            return error_response(f"网络请求失败: {e}", status_code=400)
 
     # ------------------------------------------------------------------
     # 工具
