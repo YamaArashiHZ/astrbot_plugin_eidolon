@@ -499,7 +499,7 @@ class EidolonPlugin(Star):
         num = max(1, min(num, int(self.config.get("max_num", 4))))
 
         async with self._get_lock(group_id):  # 同群串行
-            logger.info(f"生图 group={group_id} sender={sender_id} prompt={prompt[:50]!r}")
+            logger.info(f"生图 group={group_id} sender={sender_id} prompt={prompt!r}")
             yield event.plain_result(
                 "🎨 收到,正在生成图片,请稍等(高分辨率或长提示词可能需要 1~3 分钟)...")
             try:
@@ -507,8 +507,10 @@ class EidolonPlugin(Star):
                     try:
                         enhanced = await self._enhance_prompt(prompt)
                         if enhanced:
-                            logger.info(f"润色结果: {enhanced[:80]!r}")
+                            logger.info(f"润色成功({len(enhanced)}字),完整润色后提示词: {enhanced!r}")
                             prompt = enhanced
+                        else:
+                            logger.warning("提示词润色结果为空,回退原文")
                     except Exception as e:
                         logger.warning(f"提示词润色失败,回退原文: {e}")
                 for _ in range(num):
