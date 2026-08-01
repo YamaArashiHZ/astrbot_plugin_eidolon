@@ -6,7 +6,7 @@ const $ = (id) => document.getElementById(id);
 const TEXT_FIELDS = ["seedream_api_key", "seedream_model", "proxy"];
 const TEXTAREA_FIELDS = ["enhance_system_prompt_zh", "enhance_system_prompt_en"];
 const INT_FIELDS = [
-  "max_num", "cooldown_seconds", "request_timeout",
+  "max_concurrency", "cooldown_seconds", "request_timeout",
   "total_limit", "per_user_limit", "nl_min_prompt_len",
 ];
 const BOOL_FIELDS = [

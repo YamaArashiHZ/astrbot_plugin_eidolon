@@ -2,7 +2,7 @@
 AstrBot 插件:群文生图(仅适配火山方舟 Seedream 5.0 Pro)
 
 功能:
-  1. 指令触发: /画图 <提示词> [-n 张数] [-a 宽高比] [-s 分辨率]
+  1. 指令触发: /画图 <提示词> [-a 宽高比] [-s 分辨率]
   2. 群内 @机器人 + 自然语言直接生图(可选 enable_nl_trigger)
   3. 生图后端:火山方舟 Seedream(OpenAI 兼容子集,按官方 images/generations API)
   4. 三级限额:总限额 / 每人限额 / 管理员豁免
@@ -15,6 +15,7 @@ AstrBot 插件:群文生图(仅适配火山方舟 Seedream 5.0 Pro)
 """
 import asyncio
 import base64
+from collections import deque
 import json
 import re
 import time
@@ -35,7 +36,8 @@ PLUGIN_NAME = "astrbot_plugin_eidolon"
 VALID_ASPECTS = {"1:1", "16:9", "9:16", "4:3", "3:4"}
 VALID_SIZES = {"1K", "1.5K", "2K"}                            # Seedream 5.0 pro 档位
 EXT_BY_MIME = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
-FLAG_RE = re.compile(r"(?:^|\s)-(n|a|s)\s+(\S+)")
+FLAG_RE = re.compile(r"(?:^|\s)[-－—](a|s)(?:\s+|=)(\S+)", re.IGNORECASE)
+DRAW_COMMAND_RE = re.compile(r"^\s*[!！/／]?\s*(?:画图|draw)(?:\s+|$)", re.IGNORECASE)
 SAFETY_SUFFIX = ", high quality, detailed, safe for work, no text watermark"
 
 # 润色 system prompt 默认值(可在插件页面自定义,空则回退此默认值)
@@ -60,7 +62,7 @@ DEFAULT_CONFIG = {
     "image_size": "2K",
     "output_format": "png",
     "watermark": True,
-    "max_num": 4,
+    "max_concurrency": 5,
     "cooldown_seconds": 30,
     "total_limit": 200,
     "per_user_limit": 0,
@@ -96,7 +98,9 @@ class EidolonPlugin(Star):
         self.config_path = self.data_dir / "config.json"
         self.config = self._load_config()
 
-        self._group_locks: dict[str, asyncio.Lock] = {}
+        self._generation_condition = asyncio.Condition()
+        self._generation_queue: deque[object] = deque()
+        self._active_generations = 0
         self._last_gen_at: dict[str, float] = {}
         self._total_count = 0
         self._user_counts: dict[str, int] = {}
@@ -165,6 +169,11 @@ class EidolonPlugin(Star):
     def _save_config(self, data: dict):
         for k, v in data.items():
             if k in DEFAULT_CONFIG:
+                if k == "max_concurrency":
+                    try:
+                        v = min(100, max(1, int(v)))
+                    except (TypeError, ValueError):
+                        v = DEFAULT_CONFIG[k]
                 self.config[k] = v
         self.config_path.write_text(
             json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -243,6 +252,8 @@ class EidolonPlugin(Star):
             return error_response(f"保存失败: {e}", status_code=500)
         if ignored:
             logger.warning(f"忽略未知配置项: {ignored}")
+        async with self._generation_condition:
+            self._generation_condition.notify_all()
         logger.info("插件配置已更新(来自插件页面)")
         return json_response({"saved": True, "ignored": ignored})
 
@@ -443,10 +454,45 @@ class EidolonPlugin(Star):
     # ------------------------------------------------------------------
     # 工具
     # ------------------------------------------------------------------
-    def _get_lock(self, key: str) -> asyncio.Lock:
-        if key not in self._group_locks:
-            self._group_locks[key] = asyncio.Lock()
-        return self._group_locks[key]
+    def _max_concurrency(self) -> int:
+        try:
+            return min(100, max(1, int(self.config.get("max_concurrency", 5))))
+        except (TypeError, ValueError):
+            return 5
+
+    async def _reserve_generation_slot(self) -> tuple[object | None, int]:
+        """立即占用空闲槽位，或按 FIFO 入队并返回当前排队位次。"""
+        async with self._generation_condition:
+            if (self._active_generations < self._max_concurrency()
+                    and not self._generation_queue):
+                self._active_generations += 1
+                return None, 0
+            ticket = object()
+            self._generation_queue.append(ticket)
+            return ticket, len(self._generation_queue)
+
+    async def _wait_generation_slot(self, ticket: object):
+        async with self._generation_condition:
+            await self._generation_condition.wait_for(
+                lambda: self._generation_queue
+                and self._generation_queue[0] is ticket
+                and self._active_generations < self._max_concurrency())
+            self._generation_queue.popleft()
+            self._active_generations += 1
+            self._generation_condition.notify_all()
+
+    async def _remove_queued_ticket(self, ticket: object):
+        async with self._generation_condition:
+            try:
+                self._generation_queue.remove(ticket)
+            except ValueError:
+                return
+            self._generation_condition.notify_all()
+
+    async def _release_generation_slot(self):
+        async with self._generation_condition:
+            self._active_generations = max(0, self._active_generations - 1)
+            self._generation_condition.notify_all()
 
     def _api_key(self) -> str:
         """Seedream(火山方舟)API Key"""
@@ -575,6 +621,24 @@ class EidolonPlugin(Star):
             return f"{prompt.strip()},{desc}"
         return prompt.strip()
 
+    @staticmethod
+    def _parse_draw_request(message: str, fallback_prompt: str = "") -> tuple[str, str, str]:
+        """从完整消息解析生图参数,避免指令框架截断包含空格的长提示词"""
+        text = DRAW_COMMAND_RE.sub("", (message or "").strip(), count=1)
+        if not text:
+            text = (fallback_prompt or "").strip()
+        aspect, image_size = "", ""
+        for match in FLAG_RE.finditer(text):
+            flag = match.group(1).lower()
+            value = match.group(2).strip()
+            if flag == "a" and value in VALID_ASPECTS:
+                aspect = value
+            elif flag == "s":
+                normalized_size = value.upper()
+                if normalized_size in VALID_SIZES:
+                    image_size = normalized_size
+        return FLAG_RE.sub("", text).strip(), aspect, image_size
+
     async def _call_seedream(self, prompt: str, aspect: str, image_size: str = "",
                              api_key: str = "", model: str = "") -> tuple[str, str]:
         """火山方舟 Seedream 图片生成(OpenAI 兼容子集)
@@ -685,7 +749,7 @@ class EidolonPlugin(Star):
     # 共享生图流程
     # ------------------------------------------------------------------
     async def _generate_and_send(self, event: AstrMessageEvent, prompt: str,
-                                 num: int = 1, aspect: str = "", image_size: str = ""):
+                                 aspect: str = "", image_size: str = ""):
         sender_id = event.get_sender_id()
         is_admin = event.is_admin()
         group_id = event.get_group_id() or event.unified_msg_origin
@@ -699,9 +763,17 @@ class EidolonPlugin(Star):
 
         aspect = aspect or str(self.config.get("aspect_ratio", "1:1"))
         image_size = image_size or str(self.config.get("image_size", "2K"))
-        num = max(1, min(num, int(self.config.get("max_num", 4))))
 
-        async with self._get_lock(group_id):  # 同群串行
+        ticket, queue_position = await self._reserve_generation_slot()
+        slot_acquired = ticket is None
+        try:
+            if ticket is not None:
+                yield event.plain_result(
+                    f"当前生成任务已满,已进入队列,前方等待 {queue_position - 1} 个任务"
+                    f"(排队第 {queue_position} 位)。")
+                await self._wait_generation_slot(ticket)
+                slot_acquired = True
+
             logger.info(f"生图 group={group_id} sender={sender_id} prompt={prompt!r}")
             yield event.plain_result(
                 "🎨 收到,正在生成图片,请稍等(高分辨率或长提示词可能需要 1~3 分钟)...")
@@ -717,47 +789,42 @@ class EidolonPlugin(Star):
                             logger.warning("提示词润色结果为空,回退原文")
                     except Exception as e:
                         logger.warning(f"提示词润色失败,回退原文: {e}")
-                for _ in range(num):
-                    started = time.time()
-                    path, _mime = await self._generate_one(prompt, aspect, image_size)
-                    success_count += 1
-                    logger.info(f"出图成功 耗时 {time.time() - started:.1f}s 文件={path}")
-                    yield event.image_result(path)
+                started = time.time()
+                path, _mime = await self._generate_one(prompt, aspect, image_size)
+                success_count = 1
+                logger.info(f"出图成功 耗时 {time.time() - started:.1f}s 文件={path}")
+                yield event.image_result(path)
             except Exception as e:
                 logger.exception(f"生图异常: {e}")
                 yield event.plain_result(f"❌ 生图失败: {e}")
             finally:
                 if success_count > 0:
                     self._apply_quota(group_id, sender_id, success_count, is_admin)
+        finally:
+            if slot_acquired:
+                await self._release_generation_slot()
+            elif ticket is not None:
+                await self._remove_queued_ticket(ticket)
 
     # ------------------------------------------------------------------
     # 触发方式一:指令
     # ------------------------------------------------------------------
-    @filter.command("画图", alias={"绘图", "生图", "draw", "img"})
+    @filter.command("画图", alias={"draw"})
     async def draw(self, event: AstrMessageEvent, prompt: str = ""):
-        """文生图: /画图 <提示词> [-n 张数] [-a 宽高比] [-s 分辨率]"""
-        prompt = (prompt or "").strip()
+        """文生图: /画图 <提示词> [-a 宽高比] [-s 分辨率]"""
+        prompt, aspect, image_size = self._parse_draw_request(
+            event.message_str, prompt)
         if not prompt:
             yield event.plain_result(
-                "用法: /画图 <提示词> [-n 张数] [-a 宽高比] [-s 分辨率]\n"
+                "用法: /画图 <提示词> [-a 宽高比] [-s 分辨率]\n"
                 "示例: /画图 一只坐在云朵上的橘猫\n"
-                "      /画图 赛博朋克城市夜景 -n 2 -a 16:9 -s 1.5K"
+                "      /画图 赛博朋克城市夜景 -a 16:9 -s 1.5K"
             )
             return
-        num, aspect, image_size = 1, "", ""
-        for m in FLAG_RE.finditer(prompt):
-            val = m.group(2)
-            if m.group(1) == "n":
-                try:
-                    num = int(val)
-                except ValueError:
-                    pass
-            elif m.group(1) == "a" and val in VALID_ASPECTS:
-                aspect = val
-            elif m.group(1) == "s" and val in VALID_SIZES:
-                image_size = val
-        prompt = FLAG_RE.sub("", prompt).strip()
-        async for r in self._generate_and_send(event, prompt, num, aspect, image_size):
+        logger.info(
+            f"指令参数解析 aspect={aspect or '默认'} "
+            f"size={image_size or '默认'} prompt={prompt!r}")
+        async for r in self._generate_and_send(event, prompt, aspect, image_size):
             yield r
         event.stop_event()
 
@@ -779,6 +846,6 @@ class EidolonPlugin(Star):
         if not prompt or len(prompt) < int(self.config.get("nl_min_prompt_len", 5)):
             return
         logger.info(f"NL触发生图 group={event.get_group_id()} prompt={prompt[:50]!r}")
-        async for r in self._generate_and_send(event, prompt, 1):
+        async for r in self._generate_and_send(event, prompt):
             yield r
         event.stop_event()

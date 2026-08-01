@@ -139,8 +139,9 @@
             </div>
             <div class="grid-3">
               <label class="field">
-                <span class="label">单次最多张数</span>
-                <input type="number" id="max_num" min="1" max="10" />
+                <span class="label">最大并发任务数</span>
+                <input type="number" id="max_concurrency" min="1" max="100" />
+                <span class="hint">超出后按请求顺序排队</span>
               </label>
               <label class="field">
                 <span class="label">群冷却(秒)</span>
@@ -363,7 +364,7 @@
           </div>
           <div class="card-body tips">
             <ul>
-              <li>指令:<code>/画图 &lt;提示词&gt; [-n 张数] [-a 宽高比] [-s 分辨率]</code>,别名 <code>/绘图 /生图 /draw /img</code></li>
+              <li>指令:<code>/画图 &lt;提示词&gt; [-a 宽高比] [-s 分辨率]</code>,别名仅保留 <code>/draw</code></li>
               <li>宽高比 <code>-a</code> 可选 1:1 / 16:9 / 9:16 / 4:3 / 3:4;分辨率 <code>-s</code> 可选 1K / 1.5K / 2K</li>
               <li>管理员豁免指 AstrBot 全局管理员;开启后不受冷却与限额限制,但仍计入「配额」页使用明细</li>
               <li>开启 LLM 润色后,完整润色结果可在控制台日志中查看</li>
