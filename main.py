@@ -1,12 +1,17 @@
 """
-AstrBot 插件:群文生图(首选 Seedream 5.0 Pro / 可扩展 API 提供方)
+AstrBot 插件:群文生图(仅适配火山方舟 Seedream 5.0 Pro)
 
 功能:
   1. 指令触发: /画图 <提示词> [-n 张数] [-a 宽高比] [-s 分辨率]
   2. 群内 @机器人 + 自然语言直接生图(可选 enable_nl_trigger)
-  3. 预设 API:Seedream 5.0 Pro(火山方舟,默认)/ Gemini Nano Banana;自定义 base_url/api_key/model
+  3. 生图后端:火山方舟 Seedream(OpenAI 兼容子集,按官方 images/generations API)
   4. 三级限额:总限额 / 每人限额 / 管理员豁免
   5. LLM 提示词润色(可选,默认中文,失败回退原文)
+
+接口依据:火山方舟「图片生成 API」官方文档(2026-08-01 核对)
+  - POST https://ark.cn-beijing.volces.com/api/v3/images/generations
+  - size 支持方式1(推荐):分辨率档位 1K/1.5K/2K + prompt 自然语言描述宽高比
+  - 无 seed 参数;watermark/output_format 为独立参数
 """
 import asyncio
 import base64
@@ -24,22 +29,19 @@ from astrbot.api.star import Context, Star
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 ARK_BASE = "https://ark.cn-beijing.volces.com/api/v3"          # 火山方舟(Seedream)
-GEMINI_BASE = "https://generativelanguage.googleapis.com"      # Google(Gemini)
-DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite-image"
 VALID_ASPECTS = {"1:1", "16:9", "9:16", "4:3", "3:4"}
-VALID_SIZES = {"1K", "2K", "4K"}
+VALID_SIZES = {"1K", "1.5K", "2K"}                            # Seedream 5.0 pro 档位
 EXT_BY_MIME = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 FLAG_RE = re.compile(r"(?:^|\s)-(n|a|s)\s+(\S+)")
 SAFETY_SUFFIX = ", high quality, detailed, safe for work, no text watermark"
 
-# Seedream / OpenAI 兼容的 宽高比 -> size 映射(4:3/3:4 无官方档位,回退方形)
-SEEDREAM_SIZE_MAP = {
-    "1:1": "2048x2048", "16:9": "2048x1152", "9:16": "1152x2048",
-    "4:3": "2048x2048", "3:4": "2048x2048",
-}
-OPENAI_SIZE_MAP = {
-    "1:1": "1024x1024", "16:9": "1536x1024", "9:16": "1024x1536",
-    "4:3": "1024x1024", "3:4": "1024x1024",
+# 宽高比 -> prompt 自然语言描述(方式1:模型据描述判断生成尺寸)
+ASPECT_DESC = {
+    "1:1": "正方形构图 / square composition",
+    "16:9": "横版构图,宽高比16:9 / landscape 16:9",
+    "9:16": "竖版构图,宽高比9:16 / portrait 9:16",
+    "4:3": "横版构图,宽高比4:3 / landscape 4:3",
+    "3:4": "竖版构图,宽高比3:4 / portrait 3:4",
 }
 
 ENHANCE_SYSTEM_PROMPT_ZH = (
@@ -76,16 +78,9 @@ class EidolonPlugin(Star):
             self._group_locks[key] = asyncio.Lock()
         return self._group_locks[key]
 
-    def _main_key(self) -> str:
-        """按 api_provider 返回对应主 key"""
-        provider = str(self.config.get("api_provider", "seedream"))
-        if provider == "gemini":
-            return (self.config.get("gemini_api_key") or "").strip()
-        return (self.config.get("seedream_api_key") or "").strip()
-
     def _api_key(self) -> str:
-        """自定义 key 优先,否则用主 key"""
-        return (self.config.get("custom_api_key") or "").strip() or self._main_key()
+        """Seedream(火山方舟)API Key"""
+        return (self.config.get("seedream_api_key") or "").strip()
 
     def _proxy(self):
         if self.config.get("enable_proxy", True):
@@ -162,23 +157,44 @@ class EidolonPlugin(Star):
         raise last_err or RuntimeError("生成失败,请稍后再试")
 
     # ------------------------------------------------------------------
-    # 适配层:后端实现
+    # 适配层:Seedream(火山方舟)
     # ------------------------------------------------------------------
-    async def _call_seedream(self, prompt: str, aspect: str) -> tuple[str, str]:
-        """首选:火山方舟 Seedream(OpenAI 兼容子集)"""
+    def _build_prompt(self, prompt: str, aspect: str) -> str:
+        """拼接宽高比描述(API 方式1:档位 + prompt 自然语言描述)"""
+        desc = ASPECT_DESC.get(aspect)
+        if desc:
+            return f"{prompt.strip()},{desc}"
+        return prompt.strip()
+
+    async def _call_seedream(self, prompt: str, aspect: str,
+                             image_size: str = "") -> tuple[str, str]:
+        """火山方舟 Seedream 图片生成(OpenAI 兼容子集)
+
+        官方文档要点:
+          - size: 分辨率档位(1K/1.5K/2K),宽高比通过 prompt 自然语言描述(方式1,推荐)
+          - response_format: url(24h 有效) / b64_json
+          - watermark/output_format 独立参数,无 seed 参数
+          - 顶层 error 为整体错误;data[].error 为单图错误
+        """
         key = self._api_key()
         if not key:
             raise RuntimeError("未配置火山方舟 API Key(seedream_api_key)")
         model = (self.config.get("seedream_model") or "").strip() \
             or "doubao-seedream-5-0-pro"
+        image_size = image_size or str(self.config.get("image_size", "2K"))
+        if image_size not in VALID_SIZES:
+            image_size = "2K"
+        output_format = str(self.config.get("output_format", "png"))
+        if output_format not in ("png", "jpeg"):
+            output_format = "png"
         url = self._join(ARK_BASE, "images/generations")
         payload = {
             "model": model,
-            "prompt": prompt,
-            "size": SEEDREAM_SIZE_MAP.get(aspect, "2048x2048"),
+            "prompt": self._build_prompt(prompt, aspect),
+            "size": image_size,
             "response_format": "b64_json",
-            "watermark": True,
-            "seed": -1,
+            "output_format": output_format,
+            "watermark": bool(self.config.get("watermark", True)),
         }
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         try:
@@ -190,94 +206,37 @@ class EidolonPlugin(Star):
                 data = await self._post(url, headers, payload)
             else:
                 raise
-        item = (data.get("data") or [{}])[0]
+        if data.get("error"):
+            err = data["error"]
+            raise RuntimeError(f"生成失败: {err.get('code', '')} {err.get('message', '')}".strip())
+        items = data.get("data") or []
+        if not items:
+            raise RuntimeError("响应中未找到图片数据")
+        item = items[0]
+        if item.get("error"):
+            err = item["error"]
+            raise RuntimeError(f"生成失败: {err.get('code', '')} {err.get('message', '')}".strip())
         b64 = item.get("b64_json")
         if b64:
-            return self._save_image(b64), "image/png"
+            mime = f"image/{output_format}"
+            return self._save_image(b64, mime), mime
         if item.get("url"):
-            return await self._download(item["url"]), "image/png"
+            return await self._download(item["url"]), f"image/{output_format}"
         raise RuntimeError("响应中未找到图片(b64_json/url 均缺失)")
-
-    async def _call_openai_compat(self, prompt: str, aspect: str) -> tuple[str, str]:
-        """自定义:OpenAI 兼容 images/generations"""
-        base = (self.config.get("custom_base_url") or "").strip()
-        if not base:
-            raise RuntimeError("自定义 API 未填写 base_url")
-        key = self._api_key()
-        if not key:
-            raise RuntimeError("未配置 API Key(各 key 均为空)")
-        model = (self.config.get("custom_model") or "").strip() or "gpt-image-1"
-        url = self._join(base, "images/generations")
-        payload = {"model": model, "prompt": prompt, "n": 1,
-                   "size": OPENAI_SIZE_MAP.get(aspect, "1024x1024"),
-                   "response_format": "b64_json"}
-        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        try:
-            data = await self._post(url, headers, payload)
-        except RuntimeError as e:
-            if "response_format" in str(e) or "invalid" in str(e).lower() or "参数" in str(e):
-                payload.pop("response_format")
-                data = await self._post(url, headers, payload)
-            else:
-                raise
-        item = (data.get("data") or [{}])[0]
-        b64 = item.get("b64_json")
-        if b64:
-            return self._save_image(b64), "image/png"
-        if item.get("url"):
-            return await self._download(item["url"]), "image/png"
-        raise RuntimeError("响应中未找到图片(b64_json/url 均缺失)")
-
-    async def _call_gemini_native(self, prompt: str, aspect: str, image_size: str,
-                                  mime_type: str = "image/png") -> tuple[str, str]:
-        """备选:Gemini 原生 Interactions API"""
-        key = self._main_key()
-        if not key:
-            raise RuntimeError("未配置 Gemini API Key(gemini_api_key)")
-        model = str(self.config.get("gemini_model", DEFAULT_GEMINI_MODEL))
-        url = self._join(GEMINI_BASE, "v1beta/interactions")
-        payload = {
-            "model": model,
-            "input": [{"type": "text", "text": prompt}],
-            "response_format": {"type": "image", "mime_type": mime_type,
-                                "aspect_ratio": aspect, "image_size": image_size},
-        }
-        headers = {"x-goog-api-key": key, "Content-Type": "application/json"}
-        resp = await self._post(url, headers, payload)
-        img = resp.get("output_image")
-        if not (isinstance(img, dict) and img.get("data")):
-            for step in resp.get("steps", []):
-                for part in (step.get("parts") or []):
-                    if isinstance(part, dict) and part.get("type") == "image" and part.get("data"):
-                        img = part
-                        break
-                if img:
-                    break
-        if not (isinstance(img, dict) and img.get("data")):
-            raise RuntimeError("Gemini 响应中未找到图片数据")
-        mime = img.get("mime_type") or mime_type
-        return self._save_image(img["data"], mime), mime
 
     async def _download(self, url: str) -> str:
         async with httpx.AsyncClient(proxy=self._proxy(),
                                      timeout=httpx.Timeout(float(self.config.get("request_timeout", 90)))) as client:
             resp = await client.get(url)
             resp.raise_for_status()
-        path = self.image_dir / f"eid_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.png"
+        fmt = str(self.config.get("output_format", "png"))
+        ext = "jpg" if fmt == "jpeg" else "png"
+        path = self.image_dir / f"eid_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.{ext}"
         path.write_bytes(resp.content)
         return str(path)
 
-    async def _generate_one(self, prompt: str, aspect: str, image_size: str,
-                            mime_type: str = "image/png") -> tuple[str, str]:
-        """适配层入口:按 api_provider 分发"""
-        provider = str(self.config.get("api_provider", "seedream"))
-        if provider == "custom":
-            protocol = str(self.config.get("custom_protocol", "openai_compatible"))
-            if protocol == "gemini_native":
-                return await self._call_gemini_native(prompt, aspect, image_size, mime_type)
-            return await self._call_openai_compat(prompt, aspect)
-        if provider == "gemini":
-            return await self._call_gemini_native(prompt, aspect, image_size, mime_type)
+    async def _generate_one(self, prompt: str, aspect: str, image_size: str) -> tuple[str, str]:
+        """适配层入口(当前仅 Seedream)"""
         return await self._call_seedream(prompt, aspect)
 
     # ------------------------------------------------------------------
@@ -289,7 +248,7 @@ class EidolonPlugin(Star):
         base = (self.config.get("enhance_llm_base_url") or "").strip() or ARK_BASE
         key = (self.config.get("enhance_llm_api_key") or "").strip() or self._api_key()
         model = (self.config.get("enhance_llm_model") or "").strip() \
-            or ("gemini-3.1-flash-lite" if lang == "en" else "doubao-seedream-5-0-pro")
+            or ("gemini-3.1-flash-lite" if lang == "en" else "doubao-1-5-pro")
         url = self._join(base, "chat/completions")
         payload = {
             "model": model,
@@ -321,9 +280,8 @@ class EidolonPlugin(Star):
             return
 
         aspect = aspect or str(self.config.get("aspect_ratio", "1:1"))
-        image_size = image_size or str(self.config.get("image_size", "1K"))
+        image_size = image_size or str(self.config.get("image_size", "2K"))
         num = max(1, min(num, int(self.config.get("max_num", 4))))
-        full_prompt = prompt.strip() + SAFETY_SUFFIX
 
         async with self._get_lock(group_id):  # 同群串行
             logger.info(f"生图 group={group_id} sender={sender_id} prompt={prompt[:50]!r}")
@@ -335,11 +293,11 @@ class EidolonPlugin(Star):
                         enhanced = await self._enhance_prompt(prompt)
                         if enhanced:
                             logger.info(f"润色结果: {enhanced[:80]!r}")
-                            full_prompt = enhanced + SAFETY_SUFFIX
+                            prompt = enhanced
                     except Exception as e:
                         logger.warning(f"提示词润色失败,回退原文: {e}")
                 for _ in range(num):
-                    path, _mime = await self._generate_one(full_prompt, aspect, image_size)
+                    path, _mime = await self._generate_one(prompt, aspect, image_size)
                     yield event.image_result(path)
             except RuntimeError as e:
                 yield event.plain_result(f"❌ {e}")
@@ -357,7 +315,7 @@ class EidolonPlugin(Star):
             yield event.plain_result(
                 "用法: /画图 <提示词> [-n 张数] [-a 宽高比] [-s 分辨率]\n"
                 "示例: /画图 一只坐在云朵上的橘猫\n"
-                "      /画图 赛博朋克城市夜景 -n 2 -a 16:9"
+                "      /画图 赛博朋克城市夜景 -n 2 -a 16:9 -s 1.5K"
             )
             return
         num, aspect, image_size = 1, "", ""
