@@ -211,6 +211,8 @@ async function testGen() {
 }
 
 // ---------- 配额视图 ----------
+let quotaSort = "today";
+
 async function loadQuota() {
   try {
     const d = await bridge.apiGet("quota-detail");
@@ -218,30 +220,118 @@ async function loadQuota() {
     $("sum-total-used").textContent = d.total_used;
     $("sum-users").textContent = (d.users || []).length;
     $("sum-per-limit").textContent = d.per_user_limit > 0 ? d.per_user_limit : "不限";
-    const list = $("quota-list");
-    const users = d.users || [];
-    if (users.length === 0) {
-      list.innerHTML = '<div class="empty">今日暂无生成记录</div>';
-      return;
-    }
-    list.innerHTML = users.map((u) => {
-      const name = u.name ? escapeHtml(u.name) : "未知昵称";
-      const qq = escapeHtml(String(u.qq));
-      return `
-        <div class="quota-row">
-          <img class="avatar" src="https://q1.qlogo.cn/g?b=qq&nk=${qq}&s=100"
-               alt="" loading="lazy" onerror="this.style.visibility='hidden'" />
-          <div class="u-info">
-            <b>${name}</b>
-            <span>QQ: ${qq}</span>
-          </div>
-          <span class="used-badge">${u.used} 张</span>
-        </div>`;
-    }).join("");
+    renderQuotaList(d);
   } catch (e) {
     $("quota-list").innerHTML = '<div class="empty">加载失败,请稍后重试</div>';
     console.error("load quota:", e);
   }
+}
+
+function renderQuotaList(d) {
+  const list = $("quota-list");
+  const users = d.users || [];
+  if (users.length === 0) {
+    list.innerHTML = '<div class="empty">今日暂无生成记录</div>';
+    return;
+  }
+  // 进度条基准:优先每人限额,其次今日总限额
+  const perLimit = d.per_user_limit > 0 ? d.per_user_limit : (d.total_limit > 0 ? d.total_limit : 0);
+  const sorted = [...users].sort((a, b) => (
+    quotaSort === "total"
+      ? b.used_total - a.used_total
+      : b.used_today - a.used_today
+  ));
+  list.innerHTML = sorted.map((u) => {
+    const name = u.name ? escapeHtml(u.name) : "未知昵称";
+    const qq = escapeHtml(String(u.qq));
+    const admin = u.is_admin
+      ? '<span class="admin-badge">管理员</span>'
+      : "";
+    const used = quotaSort === "total" ? u.used_total : u.used_today;
+    const pct = perLimit > 0 ? Math.min(100, Math.round((used / perLimit) * 100)) : 0;
+    return `
+      <div class="quota-row">
+        <div class="quota-bar"><i style="height:${pct}%"></i></div>
+        <img class="avatar" src="https://q1.qlogo.cn/g?b=qq&nk=${qq}&s=100"
+             alt="" loading="lazy" onerror="this.style.visibility='hidden'" />
+        <div class="u-info">
+          <b>${name}${admin}</b>
+          <span>QQ: ${qq}</span>
+        </div>
+        <div class="u-nums">
+          <span class="u-today">今日 <b>${u.used_today}</b></span>
+          <span>总计 <b>${u.used_total}</b></span>
+        </div>
+        <button class="btn ghost small btn-reset-user" data-qq="${qq}">重置</button>
+      </div>`;
+  }).join("");
+  for (const btn of list.querySelectorAll(".btn-reset-user")) {
+    btn.addEventListener("click", () => resetUserQuota(btn.dataset.qq));
+  }
+}
+
+async function resetUserQuota(qq) {
+  if (!confirm(`确定重置 QQ ${qq} 的今日与总使用量吗?`)) return;
+  try {
+    await bridge.apiPost("quota/reset-user", { qq });
+    toast("已重置该用户配额 ✓");
+    loadQuota();
+  } catch (e) {
+    toast("重置失败: " + (e.message || e), true);
+  }
+}
+
+async function resetTodayQuota() {
+  if (!confirm("仅重置今日配额使用?\n\n所有人的「今日使用量」将清零(今日限额计数同步重置),历史「总使用量」记录保留。")) return;
+  const btn = $("btn-quota-reset-today");
+  btn.disabled = true;
+  try {
+    await bridge.apiPost("quota/reset-today", {});
+    toast("今日配额已重置 ✓");
+    loadQuota();
+    loadStats();
+  } catch (e) {
+    toast("重置失败: " + (e.message || e), true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function resetAllQuota() {
+  if (!confirm("完全重置?\n\n今日使用量与所有人的历史总使用量记录将全部清零,且无法恢复。确定继续吗?")) return;
+  const btn = $("btn-quota-reset-all");
+  btn.disabled = true;
+  try {
+    await bridge.apiPost("quota/reset-all", {});
+    toast("已完全重置全部记录 ✓");
+    loadQuota();
+    loadStats();
+  } catch (e) {
+    toast("重置失败: " + (e.message || e), true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---------- 复制链接(iframe 沙箱禁 window.open,改为复制) ----------
+async function copyText(text) {
+  if (!text) return false;
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fallback below */ }
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try { ok = document.execCommand("copy"); } catch { /* ignore */ }
+  document.body.removeChild(ta);
+  return ok;
 }
 
 // ---------- 详情视图 ----------
@@ -253,17 +343,27 @@ async function loadAbout() {
     $("about-author").textContent = info.author || "–";
     if (info.repo) {
       $("about-repo-url").textContent = info.repo;
-      $("about-repo-btn").addEventListener("click", () => window.open(info.repo, "_blank"));
+      $("about-repo-btn").addEventListener("click", async () => {
+        if (await copyText(info.repo)) {
+          toast("仓库链接已复制,请到浏览器地址栏打开 ✓");
+        } else {
+          toast("复制失败,请手动复制上方链接", true);
+        }
+      });
     } else {
       $("about-repo-btn").style.display = "none";
       $("about-repo-url").textContent = "暂未设置仓库地址";
     }
-    $("about-ark-btn").addEventListener("click",
-      () => window.open("https://console.volcengine.com/ark", "_blank"));
+    const ARK_URL = "https://console.volcengine.com/ark";
+    $("about-ark-btn").addEventListener("click", async () => {
+      if (await copyText(ARK_URL)) {
+        toast("控制台链接已复制,请到浏览器地址栏打开 ✓");
+      } else {
+        toast("复制失败,请手动复制上方链接", true);
+      }
+    });
   } catch (e) {
     console.error("load about:", e);
-    $("about-ark-btn").addEventListener("click",
-      () => window.open("https://console.volcengine.com/ark", "_blank"));
   }
 }
 
@@ -286,6 +386,17 @@ function bindEvents() {
     $("sidebar").classList.toggle("collapsed");
   });
   $("btn-quota-refresh").addEventListener("click", loadQuota);
+  $("btn-quota-reset-today").addEventListener("click", resetTodayQuota);
+  $("btn-quota-reset-all").addEventListener("click", resetAllQuota);
+  $("quota_sort_group").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-val]");
+    if (!btn) return;
+    quotaSort = btn.dataset.val;
+    for (const b of $("quota_sort_group").querySelectorAll("[data-val]")) {
+      b.classList.toggle("active", b.dataset.val === quotaSort);
+    }
+    loadQuota();
+  });
 }
 
 // ---------- 启动 ----------

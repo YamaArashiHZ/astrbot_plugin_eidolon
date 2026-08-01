@@ -258,10 +258,15 @@
       <section id="view-quota" class="view">
         <header class="page-head">
           <div class="page-head-text">
-            <h1>配额</h1>
+            <h1>配额 <button class="btn ghost small" id="btn-quota-refresh">刷新</button></h1>
             <p>今日生成用量明细(含管理员使用量)</p>
           </div>
-          <button class="btn ghost small" id="btn-quota-refresh">刷新</button>
+          <div class="page-head-actions">
+            <button class="btn ghost" id="btn-quota-reset-today"
+                    title="仅清零所有人的今日使用量,保留历史总使用量记录">重置今日配额</button>
+            <button class="btn danger" id="btn-quota-reset-all"
+                    title="清零今日使用量及所有人的历史总使用量记录,无法恢复">完全重置</button>
+          </div>
         </header>
         <section class="card">
           <div class="card-body quota-summary" id="quota-summary">
@@ -272,9 +277,15 @@
           </div>
         </section>
         <section class="card">
-          <div class="card-head">
-            <h2>今日使用明细</h2>
-            <p>按使用量降序</p>
+          <div class="card-head card-head-row">
+            <div>
+              <h2>今日使用明细</h2>
+              <p>进度条表示相对每人限额的今日用量</p>
+            </div>
+            <div class="segmented" id="quota_sort_group">
+              <button type="button" data-val="today" class="active">按今日使用量</button>
+              <button type="button" data-val="total">按总使用量</button>
+            </div>
           </div>
           <div class="card-body">
             <div class="quota-list" id="quota-list">
@@ -325,7 +336,7 @@
                     <span>项目仓库</span>
                     <small id="about-repo-url">–</small>
                   </div>
-                  <button class="btn ghost small" id="about-repo-btn">打开</button>
+                  <button class="btn ghost small" id="about-repo-btn">复制链接</button>
                 </div>
                 <div class="link-card">
                   <span class="link-icon">
@@ -338,7 +349,7 @@
                     <span>模型控制台</span>
                     <small>https://console.volcengine.com/ark</small>
                   </div>
-                  <button class="btn ghost small" id="about-ark-btn">打开</button>
+                  <button class="btn ghost small" id="about-ark-btn">复制链接</button>
                 </div>
               </div>
             </div>

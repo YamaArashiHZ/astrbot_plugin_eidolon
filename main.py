@@ -100,9 +100,12 @@ class EidolonPlugin(Star):
         self._last_gen_at: dict[str, float] = {}
         self._total_count = 0
         self._user_counts: dict[str, int] = {}
-        self._usage_counts: dict[str, int] = {}   # 所有用户的使用量(含管理员,仅展示用)
-        self._user_names: dict[str, str] = {}     # 发送者昵称缓存(QQ号 -> 昵称)
+        self._usage_counts: dict[str, int] = {}   # 今日各用户使用量(含管理员,仅展示用)
+        self._total_usage: dict[str, int] = {}    # 各用户历史累计使用量(总使用量)
+        self._user_names: dict[str, str] = {}     # QQ号 -> QQ昵称
         self._today = ""
+        self.usage_path = self.data_dir / "usage.json"
+        self._load_usage()
 
         # 插件页面后端 API
         context.register_web_api(
@@ -121,6 +124,12 @@ class EidolonPlugin(Star):
             f"/{plugin_name}/prompt-defaults", self.web_get_prompt_defaults, ["GET"], "获取润色提示词默认值")
         context.register_web_api(
             f"/{plugin_name}/quota-detail", self.web_get_quota_detail, ["GET"], "获取今日配额使用明细")
+        context.register_web_api(
+            f"/{plugin_name}/quota/reset-today", self.web_quota_reset_today, ["POST"], "重置今日全部配额使用")
+        context.register_web_api(
+            f"/{plugin_name}/quota/reset-all", self.web_quota_reset_all, ["POST"], "完全重置(清空全部记录)")
+        context.register_web_api(
+            f"/{plugin_name}/quota/reset-user", self.web_quota_reset_user, ["POST"], "重置指定用户配额")
         context.register_web_api(
             f"/{plugin_name}/about", self.web_get_about, ["GET"], "获取插件信息")
 
@@ -157,6 +166,61 @@ class EidolonPlugin(Star):
                 self.config[k] = v
         self.config_path.write_text(
             json.dumps(self.config, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # ------------------------------------------------------------------
+    # 用量数据持久化(usage.json:今日计数 + 历史累计,重启不丢)
+    # ------------------------------------------------------------------
+    def _load_usage(self):
+        try:
+            if self.usage_path.exists():
+                data = json.loads(self.usage_path.read_text(encoding="utf-8"))
+                self._today = str(data.get("date", ""))
+                self._total_count = int(data.get("total_count", 0))
+                self._user_counts = {str(k): int(v) for k, v in (data.get("user_counts") or {}).items()}
+                self._usage_counts = {str(k): int(v) for k, v in (data.get("usage_counts") or {}).items()}
+                self._user_names = {str(k): str(v) for k, v in (data.get("user_names") or {}).items()}
+                self._total_usage = {str(k): int(v) for k, v in (data.get("total_usage") or {}).items()}
+        except Exception as e:
+            logger.warning(f"用量数据读取失败,使用空数据: {e}")
+
+    def _save_usage(self):
+        try:
+            self.usage_path.write_text(json.dumps({
+                "date": self._today,
+                "total_count": self._total_count,
+                "user_counts": self._user_counts,
+                "usage_counts": self._usage_counts,
+                "user_names": self._user_names,
+                "total_usage": self._total_usage,
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.warning(f"用量数据保存失败: {e}")
+
+    def _record_user_name(self, sender_id: str, event) -> str:
+        """记录 QQ 昵称(优先 OneBot sender.nickname,而非群名片)"""
+        name = ""
+        raw = getattr(event.message_obj, "raw_message", None)
+        try:
+            if isinstance(raw, dict):
+                sender = raw.get("sender") or {}
+                name = str(sender.get("nickname") or "").strip()
+        except Exception:
+            pass
+        if not name:
+            name = event.get_sender_name() or ""
+        name = name.strip()
+        if name and self._user_names.get(sender_id) != name:
+            self._user_names[sender_id] = name
+            self._save_usage()
+        return name
+
+    def _get_admin_ids(self) -> set[str]:
+        """读取 AstrBot 全局管理员列表(配置 admins_id)"""
+        try:
+            cfg = self.context.get_config()
+            return {str(a) for a in (cfg.get("admins_id") or []) if a}
+        except Exception:
+            return set()
 
     # ------------------------------------------------------------------
     # 插件页面 Web API
@@ -269,23 +333,65 @@ class EidolonPlugin(Star):
         })
 
     async def web_get_quota_detail(self):
-        """今日配额明细:总限额/已用(计入限额) + 各用户使用量(含管理员,仅展示)"""
+        """今日配额明细:总限额/已用 + 各用户今日/总使用量(含管理员)"""
         self._reset_day_if_needed()
-        users = [
-            {
+        admins = self._get_admin_ids()
+        users = []
+        for uid in set(self._usage_counts) | set(self._total_usage):
+            used_today = self._usage_counts.get(uid, 0)
+            used_total = self._total_usage.get(uid, 0)
+            if used_today == 0 and used_total == 0:
+                continue
+            users.append({
                 "qq": uid,
                 "name": self._user_names.get(uid, ""),
-                "used": count,
-            }
-            for uid, count in sorted(self._usage_counts.items(),
-                                     key=lambda x: -x[1])
-        ]
+                "used_today": used_today,
+                "used_total": used_total,
+                "is_admin": uid in admins,
+            })
         return json_response({
             "total_limit": int(self.config.get("total_limit", 0)),
             "total_used": self._total_count,
             "per_user_limit": int(self.config.get("per_user_limit", 0)),
+            "admins": sorted(admins),
             "users": users,
         })
+
+    async def web_quota_reset_today(self):
+        """仅重置今日配额使用:今日计数清零,保留历史累计记录"""
+        self._reset_day_if_needed()
+        self._total_count = 0
+        self._user_counts.clear()
+        self._usage_counts.clear()
+        self._last_gen_at.clear()
+        self._save_usage()
+        logger.info("今日配额使用已重置(来自插件页面)")
+        return json_response({"ok": True})
+
+    async def web_quota_reset_all(self):
+        """完全重置:今日配额使用与历史累计记录全部清零"""
+        self._reset_day_if_needed()
+        self._total_count = 0
+        self._user_counts.clear()
+        self._usage_counts.clear()
+        self._total_usage.clear()
+        self._last_gen_at.clear()
+        self._save_usage()
+        logger.info("全部记录已完全重置(来自插件页面)")
+        return json_response({"ok": True})
+
+    async def web_quota_reset_user(self):
+        """重置指定用户的今日与总使用量"""
+        payload = await request.json(default={})
+        qq = str(payload.get("qq") or "").strip()
+        if not qq:
+            return error_response("缺少 qq 参数", status_code=400)
+        self._user_counts.pop(qq, None)
+        self._usage_counts.pop(qq, None)
+        self._total_usage.pop(qq, None)
+        self._save_usage()
+        logger.info(f"已重置用户配额: {qq}(来自插件页面)")
+        return json_response({"ok": True})
 
     async def web_get_about(self):
         """读取 metadata.yaml 返回插件信息"""
@@ -340,7 +446,7 @@ class EidolonPlugin(Star):
             self._total_count = 0
             self._user_counts.clear()
             self._usage_counts.clear()
-            self._user_names.clear()
+            self._save_usage()
 
     def _check_quota(self, group_id: str, sender_id: str, is_admin: bool) -> tuple[bool, str]:
         """返回 (是否放行, 拒绝原因);管理员(admin_ignore_limit 开启时)豁免冷却/总限额/每人限额"""
@@ -361,8 +467,10 @@ class EidolonPlugin(Star):
         return True, ""
 
     def _apply_quota(self, group_id: str, sender_id: str, num: int, is_admin: bool):
-        # 所有用户的使用量都记录(含管理员,用于配额页展示)
+        # 今日使用量与历史累计都记录(含管理员,用于配额页展示)
         self._usage_counts[sender_id] = self._usage_counts.get(sender_id, 0) + num
+        self._total_usage[sender_id] = self._total_usage.get(sender_id, 0) + num
+        self._save_usage()
         if is_admin and self.config.get("admin_ignore_limit", True):
             return
         self._last_gen_at[group_id] = time.time()
@@ -558,7 +666,7 @@ class EidolonPlugin(Star):
         sender_id = event.get_sender_id()
         is_admin = event.is_admin()
         group_id = event.get_group_id() or event.unified_msg_origin
-        self._user_names[sender_id] = event.get_sender_name() or ""
+        self._record_user_name(sender_id, event)
 
         ok, reason = self._check_quota(group_id, sender_id, is_admin)
         if not ok:

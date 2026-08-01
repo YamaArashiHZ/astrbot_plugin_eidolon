@@ -2,9 +2,9 @@ name: astrbot_plugin_eidolon
 display_name: 异画师
 desc: 群文生图插件:首选 Seedream 5.0 Pro(火山方舟),支持指令与 @机器人 自然语言触发、三级限额、LLM 提示词润色
 short_desc: QQ 群文生图(Seedream 5.0 Pro 首选)
-author: your_name
+author: YamaArashiHZ
 version: 3.0.0
-repo: https://github.com/your_name/astrbot_plugin_eidolon
+repo: https://github.com/YamaArashiHZ/astrbot_plugin_eidolon
 support_platforms:
   - aiocqhttp
 astrbot_version: ">=4.16,<5"
