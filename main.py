@@ -242,14 +242,14 @@ class EidolonPlugin(Star):
     async def web_save_config(self):
         payload = await request.json(default={})
         if not isinstance(payload, dict):
-            return error_response("invalid payload", status_code=400)
+            return error_response("请求内容格式无效", status_code=400)
         # 未知字段忽略(兼容前后端版本不同步),不阻断保存
         ignored = [k for k in payload if k not in DEFAULT_CONFIG]
         try:
             self._save_config(payload)
         except Exception as e:
             logger.error(f"配置保存失败: {e}")
-            return error_response(f"保存失败: {e}", status_code=500)
+            return error_response(f"保存配置失败：{e}", status_code=500)
         if ignored:
             logger.warning(f"忽略未知配置项: {ignored}")
         async with self._generation_condition:
@@ -271,7 +271,7 @@ class EidolonPlugin(Star):
         payload = await request.json(default={})
         key = (payload.get("key") or "").strip() or self._api_key()
         if not key:
-            return error_response("API Key 为空", status_code=400)
+            return error_response("请先填写火山方舟 API Key", status_code=400)
         try:
             async with httpx.AsyncClient(proxy=self._proxy(),
                                          timeout=httpx.Timeout(15.0)) as client:
@@ -279,21 +279,21 @@ class EidolonPlugin(Star):
                     self._join(ARK_BASE, "models"),
                     headers={"Authorization": f"Bearer {key}"})
             if resp.status_code == 200:
-                return json_response({"ok": True, "message": "连接成功,API Key 有效"})
+                return json_response({"ok": True, "message": "API Key 有效"})
             body = resp.text[:200]
-            return error_response(f"鉴权失败({resp.status_code}): {body}",
+            return error_response(f"鉴权失败（HTTP {resp.status_code}）：{body}",
                                   status_code=resp.status_code)
         except httpx.ProxyError:
-            return error_response("无法连接代理,请检查 proxy 配置", status_code=400)
+            return error_response("无法连接代理，请检查代理地址或关闭代理", status_code=400)
         except httpx.HTTPError as e:
-            return error_response(f"网络请求失败: {e}", status_code=400)
+            return error_response(f"网络请求失败：{e}", status_code=400)
 
     async def web_test_gen(self):
         """测试生成:实际调用方舟生成 1 张图(1K 档),验证 key→出图→存盘全链路"""
         payload = await request.json(default={})
         key = (payload.get("key") or "").strip() or self._api_key()
         if not key:
-            return error_response("API Key 为空", status_code=400)
+            return error_response("请先填写火山方舟 API Key", status_code=400)
         model = (payload.get("model") or "").strip() \
             or (self.config.get("seedream_model") or "").strip()
         prompt = (payload.get("prompt") or "一只坐在云朵上的橘猫").strip()
@@ -305,14 +305,14 @@ class EidolonPlugin(Star):
                 "ok": True,
                 "elapsed": round(elapsed, 1),
                 "path": path,
-                "message": f"生成成功,耗时 {elapsed:.1f}s,图片已保存: {path}",
+                "message": f"测试图片生成成功，耗时 {elapsed:.1f} 秒；文件已保存至 {path}",
             })
         except RuntimeError as e:
             elapsed = time.time() - started
-            return error_response(f"生成失败(耗时 {elapsed:.1f}s): {e}", status_code=400)
+            return error_response(f"生成失败（耗时 {elapsed:.1f} 秒）：{e}", status_code=400)
         except Exception as e:
             logger.exception(f"测试生成异常: {e}")
-            return error_response(f"生成异常: {e}", status_code=500)
+            return error_response(f"生成过程中发生异常：{e}", status_code=500)
 
     async def web_get_providers(self):
         """获取 AstrBot 中已配置的 LLM 提供商(供润色模型选择)"""
@@ -337,7 +337,7 @@ class EidolonPlugin(Star):
             return json_response({"providers": items})
         except Exception as e:
             logger.exception(f"获取模型提供商列表失败: {e}")
-            return error_response(f"获取模型列表失败: {e}", status_code=500)
+            return error_response(f"获取模型列表失败：{e}", status_code=500)
 
     async def web_get_prompt_defaults(self):
         """返回润色 system prompt 默认值(供前端「恢复默认」按钮使用)"""
@@ -400,7 +400,7 @@ class EidolonPlugin(Star):
         payload = await request.json(default={})
         qq = str(payload.get("qq") or "").strip()
         if not qq:
-            return error_response("缺少 qq 参数", status_code=400)
+            return error_response("缺少用户 QQ 号", status_code=400)
         counted_today = self._user_counts.get(qq, 0)
         self._user_counts.pop(qq, None)
         self._usage_counts.pop(qq, None)
@@ -415,7 +415,7 @@ class EidolonPlugin(Star):
         payload = await request.json(default={})
         qq = str(payload.get("qq") or "").strip()
         if not qq:
-            return error_response("缺少 qq 参数", status_code=400)
+            return error_response("缺少用户 QQ 号", status_code=400)
         counted_today = self._user_counts.get(qq, 0)
         self._user_counts.pop(qq, None)
         self._usage_counts.pop(qq, None)
@@ -430,7 +430,7 @@ class EidolonPlugin(Star):
         """读取 metadata.yaml 返回插件信息"""
         info = {
             "name": PLUGIN_NAME,
-            "display_name": "异画师",
+            "display_name": "Eidolon",
             "version": "",
             "author": "",
             "repo": "",
@@ -525,13 +525,13 @@ class EidolonPlugin(Star):
         cd = int(self.config.get("cooldown_seconds", 30))
         last = self._last_gen_at.get(group_id, 0)
         if now - last < cd:
-            return False, f"群内生成冷却中,请 {int(cd - (now - last))} 秒后再试"
+            return False, f"本群生成冷却中，请在 {int(cd - (now - last))} 秒后重试。"
         total = int(self.config.get("total_limit", 200))
         per = int(self.config.get("per_user_limit", 0))
         if total > 0 and self._total_count >= total:
-            return False, "今日生成已达总限额,明天再来吧"
+            return False, "今日图片生成总量已达上限，请明天再试。"
         if per > 0 and self._user_counts.get(sender_id, 0) >= per:
-            return False, "你今天生成已达个人限额,明天再来吧"
+            return False, "你今日的图片生成数量已达个人上限，请明天再试。"
         return True, ""
 
     def _apply_quota(self, group_id: str, sender_id: str, num: int, is_admin: bool):
@@ -556,7 +556,7 @@ class EidolonPlugin(Star):
                 raw = raw.split(",", 1)[-1]
             path.write_bytes(base64.b64decode(raw))
         except Exception as e:
-            raise RuntimeError(f"图片数据解码失败: {e}") from e
+            raise RuntimeError(f"图片数据解码失败：{e}") from e
         return str(path)
 
     async def _post(self, url: str, headers: dict, payload: dict) -> dict:
@@ -577,39 +577,39 @@ class EidolonPlugin(Star):
                     resp = await client.post(url, headers=headers, json=payload)
                 elapsed = time.time() - started
                 if resp.status_code == 429:
-                    raise RuntimeError("API 限流(429),请稍后再试或调大冷却时间")
+                    raise RuntimeError("火山方舟触发限流（HTTP 429），请稍后重试或降低并发数")
                 resp.raise_for_status()
                 logger.info(f"API 响应 {resp.status_code} 耗时 {elapsed:.1f}s (第{attempt + 1}次)")
                 return resp.json()
             except httpx.ConnectTimeout:
-                last_err = RuntimeError("连接方舟 API 超时,请检查网络;若配置了代理请确认代理可用或关闭代理")
+                last_err = RuntimeError("连接火山方舟 API 超时，请检查网络和代理设置")
             except httpx.ReadTimeout:
                 last_err = RuntimeError(
-                    f"方舟生成超时(超过 {timeout.read:.0f}s):生成耗时过长,可调大 request_timeout "
-                    "或使用更短提示词/更低分辨率")
+                    f"火山方舟生成超时（超过 {timeout.read:.0f} 秒），请调大请求超时时间，"
+                    "或尝试更短的提示词和更低的分辨率")
                 retryable = False
             except httpx.WriteTimeout:
-                last_err = RuntimeError("发送请求超时,请检查网络")
+                last_err = RuntimeError("发送请求超时，请检查网络连接")
                 retryable = False
             except httpx.TimeoutException:
-                last_err = RuntimeError("请求 API 超时,请检查网络/代理配置")
+                last_err = RuntimeError("API 请求超时，请检查网络和代理设置")
             except httpx.ConnectError:
-                last_err = RuntimeError("无法连接方舟 API,请检查网络与代理配置")
+                last_err = RuntimeError("无法连接火山方舟 API，请检查网络和代理设置")
             except httpx.ProxyError:
-                last_err = RuntimeError("无法连接代理,请检查 proxy 配置或关闭代理")
+                last_err = RuntimeError("无法连接代理，请检查代理地址或关闭代理")
             except httpx.HTTPStatusError as e:
                 if e.response.status_code >= 500:
-                    last_err = RuntimeError(f"API 服务端错误({e.response.status_code})")
+                    last_err = RuntimeError(f"火山方舟服务异常（HTTP {e.response.status_code}）")
                 else:
-                    raise RuntimeError(f"API 错误({e.response.status_code}): "
+                    raise RuntimeError(f"火山方舟请求失败（HTTP {e.response.status_code}）："
                                        f"{e.response.text[:200]}") from e
             except httpx.HTTPError as e:
-                last_err = RuntimeError(f"网络请求失败: {e}")
+                last_err = RuntimeError(f"网络请求失败：{e}")
             elapsed = time.time() - started
             logger.error(f"API 请求失败(第{attempt + 1}次) 耗时 {elapsed:.1f}s: {last_err}")
             if attempt < 2 and retryable:
                 await asyncio.sleep(2 * (attempt + 1))
-        raise last_err or RuntimeError("生成失败,请稍后再试")
+        raise last_err or RuntimeError("图片生成失败，请稍后重试")
 
     # ------------------------------------------------------------------
     # 适配层:Seedream(火山方舟)
@@ -651,7 +651,7 @@ class EidolonPlugin(Star):
         """
         key = (api_key or "").strip() or self._api_key()
         if not key:
-            raise RuntimeError("未配置火山方舟 API Key(seedream_api_key)")
+            raise RuntimeError("尚未配置火山方舟 API Key")
         model = (model or "").strip() or (self.config.get("seedream_model") or "").strip() \
             or "doubao-seedream-5-0-pro"
         image_size = image_size or str(self.config.get("image_size", "2K"))
@@ -681,20 +681,20 @@ class EidolonPlugin(Star):
                 raise
         if data.get("error"):
             err = data["error"]
-            raise RuntimeError(f"生成失败: {err.get('code', '')} {err.get('message', '')}".strip())
+            raise RuntimeError(f"火山方舟返回错误：{err.get('code', '')} {err.get('message', '')}".strip())
         items = data.get("data") or []
         if not items:
-            raise RuntimeError("响应中未找到图片数据")
+            raise RuntimeError("火山方舟响应中没有图片数据")
         item = items[0]
         if item.get("error"):
             err = item["error"]
-            raise RuntimeError(f"生成失败: {err.get('code', '')} {err.get('message', '')}".strip())
+            raise RuntimeError(f"火山方舟返回错误：{err.get('code', '')} {err.get('message', '')}".strip())
         if item.get("url"):
             return await self._download(item["url"]), f"image/{output_format}"
         if item.get("b64_json"):
             mime = f"image/{output_format}"
             return self._save_image(item["b64_json"], mime), mime
-        raise RuntimeError("响应中未找到图片(url/b64_json 均缺失)")
+        raise RuntimeError("火山方舟响应中缺少图片 URL 或 Base64 数据")
 
     async def _download(self, url: str) -> str:
         try:
@@ -704,11 +704,11 @@ class EidolonPlugin(Star):
                 resp = await client.get(url)
                 resp.raise_for_status()
         except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"图片下载失败({e.response.status_code})") from e
+            raise RuntimeError(f"图片下载失败（HTTP {e.response.status_code}）") from e
         except httpx.TimeoutException:
-            raise RuntimeError("图片下载超时(图片链接可能已失效)") from None
+            raise RuntimeError("图片下载超时，图片链接可能已失效") from None
         except httpx.HTTPError as e:
-            raise RuntimeError(f"图片下载失败: {e}") from e
+            raise RuntimeError(f"图片下载失败：{e}") from e
         fmt = str(self.config.get("output_format", "png"))
         ext = "jpg" if fmt == "jpeg" else "png"
         path = self.image_dir / f"eid_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.{ext}"
@@ -733,10 +733,10 @@ class EidolonPlugin(Star):
                 or ENHANCE_SYSTEM_PROMPT_ZH
         provider_id = (self.config.get("enhance_provider_id") or "").strip()
         if not provider_id:
-            raise RuntimeError("未选择润色模型(enhance_provider_id 为空)")
+            raise RuntimeError("尚未选择提示词润色模型")
         provider = self.context.get_provider_by_id(provider_id)
         if provider is None:
-            raise RuntimeError(f"未找到模型提供商: {provider_id},请重新选择")
+            raise RuntimeError(f"未找到提示词润色模型「{provider_id}」，请重新选择")
         resp = await provider.text_chat(
             prompt=prompt,
             session_id="",
@@ -769,14 +769,14 @@ class EidolonPlugin(Star):
         try:
             if ticket is not None:
                 yield event.plain_result(
-                    f"当前生成任务已满,已进入队列,前方等待 {queue_position - 1} 个任务"
-                    f"(排队第 {queue_position} 位)。")
+                    f"当前并发任务已满，你的请求已加入队列。"
+                    f"前方有 {queue_position - 1} 个任务，当前排队第 {queue_position} 位。")
                 await self._wait_generation_slot(ticket)
                 slot_acquired = True
 
             logger.info(f"生图 group={group_id} sender={sender_id} prompt={prompt!r}")
             yield event.plain_result(
-                "🎨 收到,正在生成图片,请稍等(高分辨率或长提示词可能需要 1~3 分钟)...")
+                "已开始生成图片。高分辨率或复杂提示词通常需要 1 至 3 分钟，请耐心等待。")
             success_count = 0
             try:
                 if self.config.get("enable_prompt_enhance", False):
@@ -796,7 +796,7 @@ class EidolonPlugin(Star):
                 yield event.image_result(path)
             except Exception as e:
                 logger.exception(f"生图异常: {e}")
-                yield event.plain_result(f"❌ 生图失败: {e}")
+                yield event.plain_result(f"图片生成失败：{e}")
             finally:
                 if success_count > 0:
                     self._apply_quota(group_id, sender_id, success_count, is_admin)
@@ -816,8 +816,8 @@ class EidolonPlugin(Star):
             event.message_str, prompt)
         if not prompt:
             yield event.plain_result(
-                "用法: /画图 <提示词> [-a 宽高比] [-s 分辨率]\n"
-                "示例: /画图 一只坐在云朵上的橘猫\n"
+                "用法：/画图 <提示词> [-a 宽高比] [-s 分辨率]\n"
+                "示例：/画图 一只坐在云朵上的橘猫\n"
                 "      /画图 赛博朋克城市夜景 -a 16:9 -s 1.5K"
             )
             return

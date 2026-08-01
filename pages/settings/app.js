@@ -1,4 +1,4 @@
-// 异画师 Eidolon · 插件设置页逻辑(侧边导航 + 三视图)
+// Eidolon plugin settings
 const bridge = window.AstrBotPluginPage;
 const $ = (id) => document.getElementById(id);
 
@@ -122,7 +122,7 @@ async function loadProviders(cfg) {
     const data = await bridge.apiGet("providers");
     const list = data.providers || [];
     if (list.length === 0) {
-      sel.add(new Option("未配置模型(请先在 AstrBot 接入模型)", ""));
+      sel.add(new Option("暂无可用模型，请先在 AstrBot 中配置", ""));
     } else {
       sel.add(new Option("未选择", ""));
       for (const p of list) {
@@ -143,9 +143,9 @@ async function restorePromptDefault(lang) {
   try {
     const defaults = await bridge.apiGet("prompt-defaults");
     $(target).value = defaults[lang] || "";
-    toast(`已恢复${lang === "en" ? "英文" : "中文"}默认提示词,点击保存生效`);
+    toast(`已恢复${lang === "en" ? "英文" : "中文"}默认提示词，请保存配置以应用`);
   } catch (e) {
-    toast("恢复默认失败: " + (e.message || e), true);
+    toast("恢复默认失败：" + (e.message || e), true);
   }
 }
 
@@ -182,10 +182,10 @@ async function save() {
   btn.textContent = "保存中…";
   try {
     await bridge.apiPost("config/save", collectConfig());
-    toast("已保存,立即生效 ✓");
-    $("save-tip").textContent = "配置已同步到插件";
+    toast("配置已保存并生效");
+    $("save-tip").textContent = "配置已保存";
   } catch (e) {
-    toast("保存失败: " + (e.message || e), true);
+    toast("保存失败：" + (e.message || e), true);
   } finally {
     btn.disabled = false;
     btn.textContent = "保存配置";
@@ -198,14 +198,14 @@ async function testKey() {
   const out = $("test-result");
   btn.disabled = true;
   out.className = "test-result";
-  out.textContent = "测试中…";
+    out.textContent = "正在测试连接…";
   try {
     const r = await bridge.apiPost("test", { key: $("seedream_api_key").value.trim() });
     out.className = "test-result ok";
-    out.textContent = "✓ " + (r.message || "连接成功");
+    out.textContent = "连接成功：" + (r.message || "API Key 有效");
   } catch (e) {
     out.className = "test-result err";
-    out.textContent = "✗ " + (e.message || e);
+    out.textContent = "连接失败：" + (e.message || e);
   } finally {
     btn.disabled = false;
   }
@@ -217,17 +217,17 @@ async function testGen() {
   const out = $("test-result");
   btn.disabled = true;
   out.className = "test-result";
-  out.textContent = "生成中,可能需要 30~90 秒…";
+    out.textContent = "正在生成测试图片，预计需要 1 至 3 分钟…";
   try {
     const r = await bridge.apiPost("test-gen", {
       key: $("seedream_api_key").value.trim(),
       model: $("seedream_model").value.trim(),
     });
     out.className = "test-result ok";
-    out.textContent = "✓ " + (r.message || "生成成功");
+    out.textContent = r.message || "测试图片生成成功";
   } catch (e) {
     out.className = "test-result err";
-    out.textContent = "✗ " + (e.message || e);
+    out.textContent = "生成失败：" + (e.message || e);
   } finally {
     btn.disabled = false;
   }
@@ -248,10 +248,10 @@ async function loadQuota() {
     $("sum-users").textContent = (d.users || []).length;
     $("sum-per-limit").textContent = d.per_user_limit > 0 ? d.per_user_limit : "不限";
     renderQuotaList(d);
-    toast("配额数据已刷新 ✓");
+    toast("用量数据已刷新");
   } catch (e) {
     $("quota-list").innerHTML = '<div class="empty">加载失败,请稍后重试</div>';
-    toast("配额刷新失败: " + (e.message || e), true);
+    toast("用量刷新失败：" + (e.message || e), true);
     console.error("load quota:", e);
   } finally {
     btn.disabled = false;
@@ -322,11 +322,11 @@ async function resetUserQuota(qq, resetAll) {
   if (!confirmed) return;
   try {
     await bridge.apiPost(resetAll ? "quota/reset-user" : "quota/reset-user-today", { qq });
-    toast(resetAll ? "已重置该用户全部记录 ✓" : "已重置该用户今日配额 ✓");
+    toast(resetAll ? "该用户的全部用量记录已重置" : "该用户的今日用量已重置");
     loadQuota();
     loadStats();
   } catch (e) {
-    toast("重置失败: " + (e.message || e), true);
+    toast("重置失败：" + (e.message || e), true);
   }
 }
 
@@ -341,11 +341,11 @@ async function resetTodayQuota() {
   btn.disabled = true;
   try {
     await bridge.apiPost("quota/reset-today", {});
-    toast("今日配额已重置 ✓");
+    toast("今日用量已重置");
     loadQuota();
     loadStats();
   } catch (e) {
-    toast("重置失败: " + (e.message || e), true);
+    toast("重置失败：" + (e.message || e), true);
   } finally {
     btn.disabled = false;
   }
@@ -363,11 +363,11 @@ async function resetAllQuota() {
   btn.disabled = true;
   try {
     await bridge.apiPost("quota/reset-all", {});
-    toast("已完全重置全部记录 ✓");
+    toast("全部用量记录已重置");
     loadQuota();
     loadStats();
   } catch (e) {
-    toast("重置失败: " + (e.message || e), true);
+    toast("重置失败：" + (e.message || e), true);
   } finally {
     btn.disabled = false;
   }
@@ -398,14 +398,14 @@ async function copyText(text) {
 async function loadAbout() {
   try {
     const info = await bridge.apiGet("about");
-    $("about-name").textContent = info.display_name || info.name || "异画师";
+    $("about-name").textContent = info.display_name || info.name || "Eidolon";
     $("about-version").textContent = info.version || "–";
     $("about-author").textContent = info.author || "–";
     if (info.repo) {
       $("about-repo-url").textContent = info.repo;
       $("about-repo-btn").addEventListener("click", async () => {
         if (await copyText(info.repo)) {
-          toast("仓库链接已复制,请到浏览器地址栏打开 ✓");
+          toast("仓库链接已复制，请在浏览器中打开");
         } else {
           toast("复制失败,请手动复制上方链接", true);
         }
@@ -417,7 +417,7 @@ async function loadAbout() {
     const ARK_URL = "https://console.volcengine.com/ark";
     $("about-ark-btn").addEventListener("click", async () => {
       if (await copyText(ARK_URL)) {
-        toast("控制台链接已复制,请到浏览器地址栏打开 ✓");
+        toast("控制台链接已复制，请在浏览器中打开");
       } else {
         toast("复制失败,请手动复制上方链接", true);
       }
