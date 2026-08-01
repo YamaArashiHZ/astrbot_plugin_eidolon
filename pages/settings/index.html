@@ -7,224 +7,360 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <!-- 顶部品牌区 -->
-    <header class="hero">
-      <div class="hero-inner">
-        <div class="logo" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="30" height="30" fill="none" stroke="currentColor"
-               stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M12 2 3 7v10l9 5 9-5V7l-9-5z"/>
-            <path d="M12 22V12"/><path d="m3 7 9 5 9-5"/>
-          </svg>
-        </div>
-        <div class="hero-text">
-          <h1>异画师 <span class="ver">Eidolon</span></h1>
-          <p>火山方舟 Seedream 5.0 Pro · QQ 群文生图</p>
-        </div>
-        <div class="stat-pill" id="stat-pill" title="今日已生成张数 / 每日总限额">
-          <span class="dot" id="stat-dot"></span>
-          <span>今日 <b id="stat-used">–</b> / <span id="stat-total">–</span></span>
-        </div>
+    <!-- 左侧竖向导航栏 -->
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <span class="brand-icon">🎨</span>
+        <span class="brand-text">异画师</span>
       </div>
-    </header>
+      <nav class="nav">
+        <button type="button" class="nav-item active" data-view="settings">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z"/>
+          </svg>
+          <span class="nav-text">设置</span>
+        </button>
+        <button type="button" class="nav-item" data-view="quota">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="2" y1="20" x2="22" y2="20"/>
+          </svg>
+          <span class="nav-text">配额</span>
+        </button>
+        <button type="button" class="nav-item" data-view="about">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+          <span class="nav-text">详情</span>
+        </button>
+      </nav>
+      <button type="button" class="nav-collapse" id="btn-collapse" title="收起/展开导航栏">
+        <svg class="nav-icon chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+        <span class="nav-text">收起</span>
+      </button>
+    </aside>
 
-    <main class="wrap">
-      <!-- 基础设置 -->
-      <section class="card">
-        <div class="card-head">
-          <h2>基础设置</h2>
-          <p>火山方舟 API 凭据与网络连接</p>
-        </div>
-        <div class="card-body">
-          <label class="field">
-            <span class="label">API Key <i class="req">必填</i></span>
-            <div class="input-key">
-              <input type="password" id="seedream_api_key" autocomplete="off"
-                     placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
-              <button type="button" class="icon-btn" id="toggle-key" title="显示/隐藏">
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
-                  <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>
-                </svg>
-              </button>
-            </div>
-            <span class="hint">火山方舟控制台 → 右上角「API Key 管理」创建后复制</span>
-          </label>
-          <label class="field">
-            <span class="label">模型 ID</span>
-            <input type="text" id="seedream_model" placeholder="doubao-seedream-5-0-pro" />
-            <span class="hint">控制台开通后显示的 Model ID 或推理接入点 ID,如 doubao-seedream-5-0-pro-260628</span>
-          </label>
-          <div class="grid-2">
+    <!-- 主内容区 -->
+    <main class="content">
+      <!-- ========== 设置视图 ========== -->
+      <section id="view-settings" class="view active">
+        <header class="page-head">
+          <div class="page-head-text">
+            <h1>设置</h1>
+            <p>火山方舟 Seedream 5.0 Pro · QQ 群文生图</p>
+          </div>
+          <div class="stat-pill" id="stat-pill" title="今日已生成张数 / 每日总限额">
+            <span class="dot" id="stat-dot"></span>
+            <span>今日 <b id="stat-used">–</b> / <span id="stat-total">–</span></span>
+          </div>
+        </header>
+
+        <!-- 基础设置 -->
+        <section class="card">
+          <div class="card-head">
+            <h2>基础设置</h2>
+            <p>火山方舟 API 凭据与网络连接</p>
+          </div>
+          <div class="card-body">
             <label class="field">
-              <span class="label">HTTP 代理</span>
-              <input type="text" id="proxy" placeholder="http://127.0.0.1:7897" />
-            </label>
-            <div class="field switch-line">
-              <span class="label">启用代理</span>
-              <input type="checkbox" class="switch" id="enable_proxy" />
-            </div>
-          </div>
-          <div class="test-row">
-            <button class="btn ghost" id="btn-test">测试连接</button>
-            <button class="btn ghost" id="btn-test-gen">测试生成</button>
-            <span class="test-result" id="test-result"></span>
-          </div>
-          <span class="hint">「测试生成」将实际调用方舟生成 1 张图(1K 档),消耗 1 张配额</span>
-        </div>
-      </section>
-
-      <!-- 生成参数 -->
-      <section class="card">
-        <div class="card-head">
-          <h2>生成参数</h2>
-          <p>图片尺寸、格式与生成行为</p>
-        </div>
-        <div class="card-body">
-          <div class="field">
-            <span class="label">默认宽高比</span>
-            <div class="ratio-group" id="aspect_group">
-              <button type="button" class="ratio" data-val="1:1"><i style="aspect-ratio:1/1"></i>1:1</button>
-              <button type="button" class="ratio" data-val="16:9"><i style="aspect-ratio:16/9"></i>16:9</button>
-              <button type="button" class="ratio" data-val="9:16"><i style="aspect-ratio:9/16"></i>9:16</button>
-              <button type="button" class="ratio" data-val="4:3"><i style="aspect-ratio:4/3"></i>4:3</button>
-              <button type="button" class="ratio" data-val="3:4"><i style="aspect-ratio:3/4"></i>3:4</button>
-            </div>
-            <span class="hint">通过提示词描述宽高比,由 Seedream 模型判断生成尺寸</span>
-          </div>
-          <div class="grid-2">
-            <div class="field">
-              <span class="label">分辨率档位</span>
-              <div class="segmented" id="image_size_group">
-                <button type="button" data-val="1K">1K</button>
-                <button type="button" data-val="1.5K">1.5K</button>
-                <button type="button" data-val="2K">2K</button>
+              <span class="label">API Key <i class="req">必填</i></span>
+              <div class="input-key">
+                <input type="password" id="seedream_api_key" autocomplete="off"
+                       placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" />
+                <button type="button" class="icon-btn" id="toggle-key" title="显示/隐藏">
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8">
+                    <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>
+                  </svg>
+                </button>
               </div>
-              <span class="hint">Seedream 5.0 Pro 支持 1K / 1.5K / 2K</span>
-            </div>
-            <div class="field">
-              <span class="label">输出格式</span>
-              <div class="segmented" id="output_format_group">
-                <button type="button" data-val="png">PNG</button>
-                <button type="button" data-val="jpeg">JPEG</button>
+              <span class="hint">火山方舟控制台 → 右上角「API Key 管理」创建后复制</span>
+            </label>
+            <label class="field">
+              <span class="label">模型 ID</span>
+              <input type="text" id="seedream_model" placeholder="doubao-seedream-5-0-pro" />
+              <span class="hint">控制台开通后显示的 Model ID 或推理接入点 ID,如 doubao-seedream-5-0-pro-260628</span>
+            </label>
+            <div class="grid-2">
+              <label class="field">
+                <span class="label">HTTP 代理</span>
+                <input type="text" id="proxy" placeholder="http://127.0.0.1:7897" />
+              </label>
+              <div class="field switch-line">
+                <span class="label">启用代理</span>
+                <input type="checkbox" class="switch" id="enable_proxy" />
               </div>
             </div>
-          </div>
-          <div class="grid-3">
-            <label class="field">
-              <span class="label">单次最多张数</span>
-              <input type="number" id="max_num" min="1" max="10" />
-            </label>
-            <label class="field">
-              <span class="label">群冷却(秒)</span>
-              <input type="number" id="cooldown_seconds" min="0" />
-            </label>
-            <label class="field">
-              <span class="label">请求超时(秒)</span>
-              <input type="number" id="request_timeout" min="10" />
-            </label>
-          </div>
-          <div class="field switch-line">
-            <span class="label">添加“AI 生成”水印 <em class="sub">建议保留,便于合规溯源</em></span>
-            <input type="checkbox" class="switch" id="watermark" />
-          </div>
-        </div>
-      </section>
-
-      <!-- 限额管理 -->
-      <section class="card">
-        <div class="card-head">
-          <h2>限额管理</h2>
-          <p>每日生成限额,0 表示不限</p>
-        </div>
-        <div class="card-body">
-          <div class="grid-2">
-            <label class="field">
-              <span class="label">每日总限额(张)</span>
-              <input type="number" id="total_limit" min="0" />
-            </label>
-            <label class="field">
-              <span class="label">每人每日限额(张)</span>
-              <input type="number" id="per_user_limit" min="0" />
-            </label>
-          </div>
-          <div class="field switch-line">
-            <span class="label">管理员无视限额 <em class="sub">指 AstrBot 全局管理员(WebUI 设置中的管理员),而非群主/群管理;开启后不受冷却与限额限制</em></span>
-            <input type="checkbox" class="switch" id="admin_ignore_limit" />
-          </div>
-        </div>
-      </section>
-
-      <!-- 自然语言触发 -->
-      <section class="card">
-        <div class="card-head">
-          <h2>自然语言触发</h2>
-          <p>群内 @机器人 + 描述直接生图,无需指令</p>
-        </div>
-        <div class="card-body">
-          <div class="grid-2">
-            <div class="field switch-line">
-              <span class="label">启用 @机器人 触发</span>
-              <input type="checkbox" class="switch" id="enable_nl_trigger" />
+            <div class="test-row">
+              <button class="btn ghost" id="btn-test">测试连接</button>
+              <button class="btn ghost" id="btn-test-gen">测试生成</button>
+              <span class="test-result" id="test-result"></span>
             </div>
-            <label class="field">
-              <span class="label">最小提示词字数</span>
-              <input type="number" id="nl_min_prompt_len" min="1" />
-            </label>
+            <span class="hint">「测试生成」将实际调用方舟生成 1 张图(1K 档),消耗 1 张配额</span>
           </div>
-          <span class="hint">关闭时 @机器人 消息完全放行给 AstrBot LLM 对话</span>
-        </div>
-      </section>
+        </section>
 
-      <!-- LLM 润色 -->
-      <section class="card">
-        <div class="card-head">
-          <h2>LLM 提示词润色</h2>
-          <p>生图前用文本模型润色提示词,失败自动回退原文</p>
-        </div>
-        <div class="card-body">
-          <div class="grid-2">
+        <!-- 生成参数 -->
+        <section class="card">
+          <div class="card-head">
+            <h2>生成参数</h2>
+            <p>图片尺寸、格式与生成行为</p>
+          </div>
+          <div class="card-body">
+            <div class="field">
+              <span class="label">默认宽高比</span>
+              <div class="ratio-group" id="aspect_group">
+                <button type="button" class="ratio" data-val="1:1"><i style="aspect-ratio:1/1"></i>1:1</button>
+                <button type="button" class="ratio" data-val="16:9"><i style="aspect-ratio:16/9"></i>16:9</button>
+                <button type="button" class="ratio" data-val="9:16"><i style="aspect-ratio:9/16"></i>9:16</button>
+                <button type="button" class="ratio" data-val="4:3"><i style="aspect-ratio:4/3"></i>4:3</button>
+                <button type="button" class="ratio" data-val="3:4"><i style="aspect-ratio:3/4"></i>3:4</button>
+              </div>
+              <span class="hint">通过提示词描述宽高比,由 Seedream 模型判断生成尺寸</span>
+            </div>
+            <div class="grid-2">
+              <div class="field">
+                <span class="label">分辨率档位</span>
+                <div class="segmented" id="image_size_group">
+                  <button type="button" data-val="1K">1K</button>
+                  <button type="button" data-val="1.5K">1.5K</button>
+                  <button type="button" data-val="2K">2K</button>
+                </div>
+                <span class="hint">Seedream 5.0 Pro 支持 1K / 1.5K / 2K</span>
+              </div>
+              <div class="field">
+                <span class="label">输出格式</span>
+                <div class="segmented" id="output_format_group">
+                  <button type="button" data-val="png">PNG</button>
+                  <button type="button" data-val="jpeg">JPEG</button>
+                </div>
+              </div>
+            </div>
+            <div class="grid-3">
+              <label class="field">
+                <span class="label">单次最多张数</span>
+                <input type="number" id="max_num" min="1" max="10" />
+              </label>
+              <label class="field">
+                <span class="label">群冷却(秒)</span>
+                <input type="number" id="cooldown_seconds" min="0" />
+              </label>
+              <label class="field">
+                <span class="label">请求超时(秒)</span>
+                <input type="number" id="request_timeout" min="10" />
+              </label>
+            </div>
             <div class="field switch-line">
-              <span class="label">启用润色</span>
-              <input type="checkbox" class="switch" id="enable_prompt_enhance" />
+              <span class="label">添加“AI 生成”水印 <em class="sub">建议保留,便于合规溯源</em></span>
+              <input type="checkbox" class="switch" id="watermark" />
+            </div>
+          </div>
+        </section>
+
+        <!-- 限额管理 -->
+        <section class="card">
+          <div class="card-head">
+            <h2>限额管理</h2>
+            <p>每日生成限额,0 表示不限</p>
+          </div>
+          <div class="card-body">
+            <div class="grid-2">
+              <label class="field">
+                <span class="label">每日总限额(张)</span>
+                <input type="number" id="total_limit" min="0" />
+              </label>
+              <label class="field">
+                <span class="label">每人每日限额(张)</span>
+                <input type="number" id="per_user_limit" min="0" />
+              </label>
+            </div>
+            <div class="field switch-line">
+              <span class="label">管理员无视限额 <em class="sub">指 AstrBot 全局管理员(WebUI 设置中的管理员),而非群主/群管理;开启后不受冷却与限额限制</em></span>
+              <input type="checkbox" class="switch" id="admin_ignore_limit" />
+            </div>
+          </div>
+        </section>
+
+        <!-- 自然语言触发 -->
+        <section class="card">
+          <div class="card-head">
+            <h2>自然语言触发</h2>
+            <p>群内 @机器人 + 描述直接生图,无需指令</p>
+          </div>
+          <div class="card-body">
+            <div class="grid-2">
+              <div class="field switch-line">
+                <span class="label">启用 @机器人 触发</span>
+                <input type="checkbox" class="switch" id="enable_nl_trigger" />
+              </div>
+              <label class="field">
+                <span class="label">最小提示词字数</span>
+                <input type="number" id="nl_min_prompt_len" min="1" />
+              </label>
+            </div>
+            <span class="hint">关闭时 @机器人 消息完全放行给 AstrBot LLM 对话</span>
+          </div>
+        </section>
+
+        <!-- LLM 润色 -->
+        <section class="card">
+          <div class="card-head">
+            <h2>LLM 提示词润色</h2>
+            <p>生图前用文本模型润色提示词,失败自动回退原文</p>
+          </div>
+          <div class="card-body">
+            <div class="grid-2">
+              <div class="field switch-line">
+                <span class="label">启用润色</span>
+                <input type="checkbox" class="switch" id="enable_prompt_enhance" />
+              </div>
+              <div class="field">
+                <span class="label">润色语言</span>
+                <div class="segmented" id="enhance_lang_group">
+                  <button type="button" data-val="zh">中文</button>
+                  <button type="button" data-val="en">英文</button>
+                </div>
+              </div>
             </div>
             <div class="field">
-              <span class="label">润色语言</span>
-              <div class="segmented" id="enhance_lang_group">
-                <button type="button" data-val="zh">中文</button>
-                <button type="button" data-val="en">英文</button>
+              <span class="label">润色模型 <em class="sub">从 AstrBot 已配置的模型中选用</em></span>
+              <select id="enhance_provider_id">
+                <option value="">未选择</option>
+              </select>
+              <span class="hint">选择后由 AstrBot 对应模型完成提示词润色;未选择时润色功能自动回退原文</span>
+            </div>
+            <div class="field">
+              <span class="label">中文润色提示词 <em class="sub">发给润色模型的系统提示词,可自定义</em></span>
+              <textarea id="enhance_system_prompt_zh" rows="4" spellcheck="false"></textarea>
+              <div class="prompt-actions">
+                <button type="button" class="btn ghost small restore-prompt" data-lang="zh">恢复默认</button>
+              </div>
+            </div>
+            <div class="field">
+              <span class="label">英文润色提示词 <em class="sub">「润色语言」选英文时使用</em></span>
+              <textarea id="enhance_system_prompt_en" rows="4" spellcheck="false"></textarea>
+              <div class="prompt-actions">
+                <button type="button" class="btn ghost small restore-prompt" data-lang="en">恢复默认</button>
               </div>
             </div>
           </div>
-          <div class="field">
-            <span class="label">润色模型 <em class="sub">从 AstrBot 已配置的模型中选用</em></span>
-            <select id="enhance_provider_id">
-              <option value="">未选择</option>
-            </select>
-            <span class="hint">选择后由 AstrBot 对应模型完成提示词润色;未选择时润色功能自动回退原文</span>
-          </div>
-          <div class="field">
-            <span class="label">中文润色提示词 <em class="sub">发给润色模型的系统提示词,可自定义</em></span>
-            <textarea id="enhance_system_prompt_zh" rows="4" spellcheck="false"></textarea>
-            <div class="prompt-actions">
-              <button type="button" class="btn ghost small restore-prompt" data-lang="zh">恢复默认</button>
-            </div>
-          </div>
-          <div class="field">
-            <span class="label">英文润色提示词 <em class="sub">「润色语言」选英文时使用</em></span>
-            <textarea id="enhance_system_prompt_en" rows="4" spellcheck="false"></textarea>
-            <div class="prompt-actions">
-              <button type="button" class="btn ghost small restore-prompt" data-lang="en">恢复默认</button>
-            </div>
-          </div>
+        </section>
+
+        <!-- 保存区(视图内底部) -->
+        <div class="save-area">
+          <span class="save-tip" id="save-tip">修改后请点击保存生效</span>
+          <button class="btn primary" id="btn-save">保存配置</button>
         </div>
+      </section>
+
+      <!-- ========== 配额视图 ========== -->
+      <section id="view-quota" class="view">
+        <header class="page-head">
+          <div class="page-head-text">
+            <h1>配额</h1>
+            <p>今日生成用量明细(含管理员使用量)</p>
+          </div>
+          <button class="btn ghost small" id="btn-quota-refresh">刷新</button>
+        </header>
+        <section class="card">
+          <div class="card-body quota-summary" id="quota-summary">
+            <div class="sum-item"><span>今日总限额</span><b id="sum-total-limit">–</b></div>
+            <div class="sum-item"><span>已用(计入限额)</span><b id="sum-total-used">–</b></div>
+            <div class="sum-item"><span>使用人数</span><b id="sum-users">–</b></div>
+            <div class="sum-item"><span>每人限额</span><b id="sum-per-limit">–</b></div>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-head">
+            <h2>今日使用明细</h2>
+            <p>按使用量降序</p>
+          </div>
+          <div class="card-body">
+            <div class="quota-list" id="quota-list">
+              <div class="empty">加载中…</div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <!-- ========== 详情视图 ========== -->
+      <section id="view-about" class="view">
+        <header class="page-head">
+          <div class="page-head-text">
+            <h1>详情</h1>
+            <p>异画师 Eidolon · QQ 群文生图插件</p>
+          </div>
+        </header>
+        <section class="card">
+          <div class="card-head">
+            <h2>应用信息</h2>
+          </div>
+          <div class="card-body">
+            <div class="info-grid">
+              <div class="info-item">
+                <span class="info-label">名称</span>
+                <b id="about-name">–</b>
+              </div>
+              <div class="info-item">
+                <span class="info-label">版本</span>
+                <b id="about-version">–</b>
+              </div>
+              <div class="info-item">
+                <span class="info-label">作者</span>
+                <b id="about-author">–</b>
+              </div>
+            </div>
+            <div class="links-block">
+              <span class="links-label">相关链接</span>
+              <div class="links-row">
+                <div class="link-card">
+                  <span class="link-icon">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor">
+                      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/>
+                    </svg>
+                  </span>
+                  <div class="link-text">
+                    <b>GitHub</b>
+                    <span>项目仓库</span>
+                    <small id="about-repo-url">–</small>
+                  </div>
+                  <button class="btn ghost small" id="about-repo-btn">打开</button>
+                </div>
+                <div class="link-card">
+                  <span class="link-icon">
+                    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14.5v-9a.5.5 0 01.8-.4l6 4.5a.5.5 0 010 .8l-6 4.5a.5.5 0 01-.8-.4z"/>
+                    </svg>
+                  </span>
+                  <div class="link-text">
+                    <b>火山方舟</b>
+                    <span>模型控制台</span>
+                    <small>https://console.volcengine.com/ark</small>
+                  </div>
+                  <button class="btn ghost small" id="about-ark-btn">打开</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-head">
+            <h2>使用提示</h2>
+          </div>
+          <div class="card-body tips">
+            <ul>
+              <li>指令:<code>/画图 &lt;提示词&gt; [-n 张数] [-a 宽高比] [-s 分辨率]</code>,别名 <code>/绘图 /生图 /draw /img</code></li>
+              <li>宽高比 <code>-a</code> 可选 1:1 / 16:9 / 9:16 / 4:3 / 3:4;分辨率 <code>-s</code> 可选 1K / 1.5K / 2K</li>
+              <li>管理员豁免指 AstrBot 全局管理员;开启后不受冷却与限额限制,但仍计入「配额」页使用明细</li>
+              <li>开启 LLM 润色后,完整润色结果可在控制台日志中查看</li>
+              <li>方舟 2K 生成约需 1~3 分钟,请耐心等待,勿连续刷屏</li>
+              <li>免费额度耗尽会出现 429 / SetLimitExceeded,需到火山方舟控制台关闭「安心体验模式」</li>
+            </ul>
+          </div>
+        </section>
       </section>
     </main>
-
-    <!-- 保存栏 -->
-    <footer class="save-bar">
-      <span class="save-tip" id="save-tip">修改后请点击保存生效</span>
-      <button class="btn primary" id="btn-save">保存配置</button>
-    </footer>
 
     <div class="toast" id="toast"></div>
     <script type="module" src="./app.js"></script>

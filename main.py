@@ -100,6 +100,8 @@ class EidolonPlugin(Star):
         self._last_gen_at: dict[str, float] = {}
         self._total_count = 0
         self._user_counts: dict[str, int] = {}
+        self._usage_counts: dict[str, int] = {}   # 所有用户的使用量(含管理员,仅展示用)
+        self._user_names: dict[str, str] = {}     # 发送者昵称缓存(QQ号 -> 昵称)
         self._today = ""
 
         # 插件页面后端 API
@@ -117,6 +119,10 @@ class EidolonPlugin(Star):
             f"/{plugin_name}/providers", self.web_get_providers, ["GET"], "获取 AstrBot 已配置的 LLM 模型列表")
         context.register_web_api(
             f"/{plugin_name}/prompt-defaults", self.web_get_prompt_defaults, ["GET"], "获取润色提示词默认值")
+        context.register_web_api(
+            f"/{plugin_name}/quota-detail", self.web_get_quota_detail, ["GET"], "获取今日配额使用明细")
+        context.register_web_api(
+            f"/{plugin_name}/about", self.web_get_about, ["GET"], "获取插件信息")
 
     # ------------------------------------------------------------------
     # 配置管理(插件页面读写,持久化到 data/plugin_data/<plugin>/config.json)
@@ -262,6 +268,50 @@ class EidolonPlugin(Star):
             "en": ENHANCE_SYSTEM_PROMPT_EN,
         })
 
+    async def web_get_quota_detail(self):
+        """今日配额明细:总限额/已用(计入限额) + 各用户使用量(含管理员,仅展示)"""
+        self._reset_day_if_needed()
+        users = [
+            {
+                "qq": uid,
+                "name": self._user_names.get(uid, ""),
+                "used": count,
+            }
+            for uid, count in sorted(self._usage_counts.items(),
+                                     key=lambda x: -x[1])
+        ]
+        return json_response({
+            "total_limit": int(self.config.get("total_limit", 0)),
+            "total_used": self._total_count,
+            "per_user_limit": int(self.config.get("per_user_limit", 0)),
+            "users": users,
+        })
+
+    async def web_get_about(self):
+        """读取 metadata.yaml 返回插件信息"""
+        info = {
+            "name": PLUGIN_NAME,
+            "display_name": "异画师",
+            "version": "",
+            "author": "",
+            "repo": "",
+            "desc": "",
+        }
+        try:
+            import yaml
+            meta_path = Path(__file__).resolve().parent / "metadata.yaml"
+            if meta_path.exists():
+                meta = yaml.safe_load(meta_path.read_text(encoding="utf-8")) or {}
+                info["name"] = meta.get("name", PLUGIN_NAME)
+                info["display_name"] = meta.get("display_name") or meta.get("name", PLUGIN_NAME)
+                info["version"] = str(meta.get("version", ""))
+                info["author"] = meta.get("author", "")
+                info["repo"] = meta.get("repo", "")
+                info["desc"] = meta.get("desc", "")
+        except Exception as e:
+            logger.warning(f"读取 metadata.yaml 失败: {e}")
+        return json_response(info)
+
     # ------------------------------------------------------------------
     # 工具
     # ------------------------------------------------------------------
@@ -289,6 +339,8 @@ class EidolonPlugin(Star):
             self._today = today
             self._total_count = 0
             self._user_counts.clear()
+            self._usage_counts.clear()
+            self._user_names.clear()
 
     def _check_quota(self, group_id: str, sender_id: str, is_admin: bool) -> tuple[bool, str]:
         """返回 (是否放行, 拒绝原因);管理员(admin_ignore_limit 开启时)豁免冷却/总限额/每人限额"""
@@ -309,6 +361,8 @@ class EidolonPlugin(Star):
         return True, ""
 
     def _apply_quota(self, group_id: str, sender_id: str, num: int, is_admin: bool):
+        # 所有用户的使用量都记录(含管理员,用于配额页展示)
+        self._usage_counts[sender_id] = self._usage_counts.get(sender_id, 0) + num
         if is_admin and self.config.get("admin_ignore_limit", True):
             return
         self._last_gen_at[group_id] = time.time()
@@ -504,6 +558,7 @@ class EidolonPlugin(Star):
         sender_id = event.get_sender_id()
         is_admin = event.is_admin()
         group_id = event.get_group_id() or event.unified_msg_origin
+        self._user_names[sender_id] = event.get_sender_name() or ""
 
         ok, reason = self._check_quota(group_id, sender_id, is_admin)
         if not ok:
