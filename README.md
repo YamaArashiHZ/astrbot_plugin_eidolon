@@ -72,4 +72,4 @@ data/plugin_data/astrbot_plugin_eidolon/
 
 ## 许可证
 
-本项目暂未声明开源许可证。未经许可，请勿将代码用于许可证未明确授权的用途。
+本项目基于 [MIT License](LICENSE) 开源。

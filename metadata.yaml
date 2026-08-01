@@ -5,6 +5,11 @@ short_desc: Seedream 5.0 Pro 群聊文生图插件
 author: YamaArashiHZ
 version: 1.0.0
 repo: https://github.com/YamaArashiHZ/astrbot_plugin_eidolon
+social_link: https://github.com/YamaArashiHZ
 support_platforms:
   - aiocqhttp
 astrbot_version: ">=4.16,<5"
+tags:
+  - 文生图
+  - Seedream
+  - 火山方舟
