@@ -3,10 +3,7 @@ const bridge = window.AstrBotPluginPage;
 const $ = (id) => document.getElementById(id);
 
 // 与后端 DEFAULT_CONFIG 对应的字段分组
-const TEXT_FIELDS = [
-  "seedream_api_key", "seedream_model", "proxy",
-  "enhance_llm_base_url", "enhance_llm_api_key", "enhance_llm_model",
-];
+const TEXT_FIELDS = ["seedream_api_key", "seedream_model", "proxy"];
 const INT_FIELDS = [
   "max_num", "cooldown_seconds", "request_timeout",
   "total_limit", "per_user_limit", "nl_min_prompt_len",
@@ -67,6 +64,30 @@ async function loadConfig() {
   for (const k of INT_FIELDS) if ($(k)) $(k).value = cfg[k] ?? 0;
   for (const k of BOOL_FIELDS) if ($(k)) $(k).checked = Boolean(cfg[k]);
   for (const k of Object.keys(GROUP_FIELDS)) setGroupValue(k, cfg[k]);
+  await loadProviders(cfg);
+}
+
+// ---------- 润色模型下拉(AstrBot 已配置的模型) ----------
+async function loadProviders(cfg) {
+  const sel = $("enhance_provider_id");
+  sel.innerHTML = "";
+  try {
+    const data = await bridge.apiGet("providers");
+    const list = data.providers || [];
+    if (list.length === 0) {
+      sel.add(new Option("未配置模型(请先在 AstrBot 接入模型)", ""));
+    } else {
+      sel.add(new Option("未选择", ""));
+      for (const p of list) {
+        const label = `${p.name || p.id}${p.model_name ? " · " + p.model_name : ""}`;
+        sel.add(new Option(label, p.id));
+      }
+    }
+    sel.value = (cfg && cfg.enhance_provider_id) || "";
+  } catch (e) {
+    sel.add(new Option("加载模型列表失败", ""));
+    console.error("load providers:", e);
+  }
 }
 
 async function loadStats() {
@@ -90,6 +111,8 @@ function collectConfig() {
   }
   for (const k of BOOL_FIELDS) payload[k] = $(k).checked;
   Object.assign(payload, groupValues);
+  const sel = $("enhance_provider_id");
+  payload.enhance_provider_id = (sel ? sel.value : "").trim();
   return payload;
 }
 
@@ -128,10 +151,33 @@ async function testKey() {
   }
 }
 
+// ---------- 测试生成(实际调用方舟,消耗 1 张配额) ----------
+async function testGen() {
+  const btn = $("btn-test-gen");
+  const out = $("test-result");
+  btn.disabled = true;
+  out.className = "test-result";
+  out.textContent = "生成中,可能需要 30~90 秒…";
+  try {
+    const r = await bridge.apiPost("test-gen", {
+      key: $("seedream_api_key").value.trim(),
+      model: $("seedream_model").value.trim(),
+    });
+    out.className = "test-result ok";
+    out.textContent = "✓ " + (r.message || "生成成功");
+  } catch (e) {
+    out.className = "test-result err";
+    out.textContent = "✗ " + (e.message || e);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ---------- 事件绑定 ----------
 function bindEvents() {
   $("btn-save").addEventListener("click", save);
   $("btn-test").addEventListener("click", testKey);
+  $("btn-test-gen").addEventListener("click", testGen);
   $("toggle-key").addEventListener("click", () => {
     const input = $("seedream_api_key");
     input.type = input.type === "password" ? "text" : "password";

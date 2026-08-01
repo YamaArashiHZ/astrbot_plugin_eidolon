@@ -42,7 +42,7 @@ SAFETY_SUFFIX = ", high quality, detailed, safe for work, no text watermark"
 DEFAULT_CONFIG = {
     "seedream_api_key": "",
     "seedream_model": "doubao-seedream-5-0-pro",
-    "enable_proxy": True,
+    "enable_proxy": False,
     "proxy": "http://127.0.0.1:7897",
     "aspect_ratio": "1:1",
     "image_size": "2K",
@@ -53,14 +53,12 @@ DEFAULT_CONFIG = {
     "total_limit": 200,
     "per_user_limit": 0,
     "admin_ignore_limit": True,
-    "request_timeout": 90,
+    "request_timeout": 300,
     "enable_nl_trigger": False,
     "nl_min_prompt_len": 5,
     "enable_prompt_enhance": False,
     "enhance_lang": "zh",
-    "enhance_llm_base_url": "",
-    "enhance_llm_api_key": "",
-    "enhance_llm_model": "doubao-1-5-pro",
+    "enhance_provider_id": "",
 }
 
 # 宽高比 -> prompt 自然语言描述(方式1:模型据描述判断生成尺寸)
@@ -110,20 +108,36 @@ class EidolonPlugin(Star):
             f"/{plugin_name}/stats", self.web_get_stats, ["GET"], "获取今日用量")
         context.register_web_api(
             f"/{plugin_name}/test", self.web_test_key, ["POST"], "测试 API Key 连通性")
+        context.register_web_api(
+            f"/{plugin_name}/test-gen", self.web_test_gen, ["POST"], "测试生成(消耗 1 张配额)")
+        context.register_web_api(
+            f"/{plugin_name}/providers", self.web_get_providers, ["GET"], "获取 AstrBot 已配置的 LLM 模型列表")
 
     # ------------------------------------------------------------------
     # 配置管理(插件页面读写,持久化到 data/plugin_data/<plugin>/config.json)
     # ------------------------------------------------------------------
     def _load_config(self) -> dict:
         cfg = dict(DEFAULT_CONFIG)
+        migrated = False
         try:
             if self.config_path.exists():
                 saved = json.loads(self.config_path.read_text(encoding="utf-8"))
                 for k in DEFAULT_CONFIG:
                     if k in saved:
                         cfg[k] = saved[k]
+                # 旧默认值迁移:request_timeout=90(旧默认)升级为新默认
+                if saved.get("request_timeout") == 90 and DEFAULT_CONFIG["request_timeout"] != 90:
+                    cfg["request_timeout"] = DEFAULT_CONFIG["request_timeout"]
+                    migrated = True
         except Exception as e:
             logger.warning(f"配置读取失败,使用默认配置: {e}")
+        if migrated:
+            try:
+                self.config_path.write_text(
+                    json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+                logger.info("已迁移旧配置:request_timeout 90 -> %s", DEFAULT_CONFIG["request_timeout"])
+            except Exception:
+                pass
         return cfg
 
     def _save_config(self, data: dict):
@@ -143,16 +157,17 @@ class EidolonPlugin(Star):
         payload = await request.json(default={})
         if not isinstance(payload, dict):
             return error_response("invalid payload", status_code=400)
-        unknown = [k for k in payload if k not in DEFAULT_CONFIG]
-        if unknown:
-            return error_response(f"unknown config keys: {unknown}", status_code=400)
+        # 未知字段忽略(兼容前后端版本不同步),不阻断保存
+        ignored = [k for k in payload if k not in DEFAULT_CONFIG]
         try:
             self._save_config(payload)
         except Exception as e:
             logger.error(f"配置保存失败: {e}")
             return error_response(f"保存失败: {e}", status_code=500)
+        if ignored:
+            logger.warning(f"忽略未知配置项: {ignored}")
         logger.info("插件配置已更新(来自插件页面)")
-        return json_response({"saved": True})
+        return json_response({"saved": True, "ignored": ignored})
 
     async def web_get_stats(self):
         self._reset_day_if_needed()
@@ -184,6 +199,57 @@ class EidolonPlugin(Star):
         except httpx.HTTPError as e:
             return error_response(f"网络请求失败: {e}", status_code=400)
 
+    async def web_test_gen(self):
+        """测试生成:实际调用方舟生成 1 张图(1K 档),验证 key→出图→存盘全链路"""
+        payload = await request.json(default={})
+        key = (payload.get("key") or "").strip() or self._api_key()
+        if not key:
+            return error_response("API Key 为空", status_code=400)
+        model = (payload.get("model") or "").strip() \
+            or (self.config.get("seedream_model") or "").strip()
+        prompt = (payload.get("prompt") or "一只坐在云朵上的橘猫").strip()
+        started = time.time()
+        try:
+            path, _mime = await self._call_seedream(prompt, "1:1", "1K", key, model)
+            elapsed = time.time() - started
+            return json_response({
+                "ok": True,
+                "elapsed": round(elapsed, 1),
+                "path": path,
+                "message": f"生成成功,耗时 {elapsed:.1f}s,图片已保存: {path}",
+            })
+        except RuntimeError as e:
+            elapsed = time.time() - started
+            return error_response(f"生成失败(耗时 {elapsed:.1f}s): {e}", status_code=400)
+        except Exception as e:
+            logger.exception(f"测试生成异常: {e}")
+            return error_response(f"生成异常: {e}", status_code=500)
+
+    async def web_get_providers(self):
+        """获取 AstrBot 中已配置的 LLM 提供商(供润色模型选择)"""
+        try:
+            providers = self.context.get_all_providers()
+            items = []
+            for p in providers:
+                try:
+                    meta = p.meta()
+                    provider_id = meta.id
+                    provider_type = meta.type
+                except Exception:
+                    provider_id = p.provider_config.get("id", "")
+                    provider_type = p.provider_config.get("type", "")
+                model_name = p.get_model() or p.provider_config.get("model", "")
+                items.append({
+                    "id": provider_id,
+                    "name": p.provider_config.get("id", provider_id),
+                    "type": provider_type,
+                    "model_name": model_name,
+                })
+            return json_response({"providers": items})
+        except Exception as e:
+            logger.exception(f"获取模型提供商列表失败: {e}")
+            return error_response(f"获取模型列表失败: {e}", status_code=500)
+
     # ------------------------------------------------------------------
     # 工具
     # ------------------------------------------------------------------
@@ -213,51 +279,81 @@ class EidolonPlugin(Star):
             self._user_counts.clear()
 
     def _check_quota(self, group_id: str, sender_id: str, is_admin: bool) -> tuple[bool, str]:
-        """返回 (是否放行, 拒绝原因);管理员可豁免总/人限额(仍受冷却)"""
+        """返回 (是否放行, 拒绝原因);管理员(admin_ignore_limit 开启时)豁免冷却/总限额/每人限额"""
         self._reset_day_if_needed()
+        if is_admin and self.config.get("admin_ignore_limit", True):
+            return True, ""
         now = time.time()
         cd = int(self.config.get("cooldown_seconds", 30))
         last = self._last_gen_at.get(group_id, 0)
         if now - last < cd:
             return False, f"群内生成冷却中,请 {int(cd - (now - last))} 秒后再试"
-        if not (is_admin and self.config.get("admin_ignore_limit", True)):
-            total = int(self.config.get("total_limit", 200))
-            per = int(self.config.get("per_user_limit", 0))
-            if total > 0 and self._total_count >= total:
-                return False, "今日生成已达总限额,明天再来吧"
-            if per > 0 and self._user_counts.get(sender_id, 0) >= per:
-                return False, "你今天生成已达个人限额,明天再来吧"
+        total = int(self.config.get("total_limit", 200))
+        per = int(self.config.get("per_user_limit", 0))
+        if total > 0 and self._total_count >= total:
+            return False, "今日生成已达总限额,明天再来吧"
+        if per > 0 and self._user_counts.get(sender_id, 0) >= per:
+            return False, "你今天生成已达个人限额,明天再来吧"
         return True, ""
 
     def _apply_quota(self, group_id: str, sender_id: str, num: int, is_admin: bool):
+        if is_admin and self.config.get("admin_ignore_limit", True):
+            return
         self._last_gen_at[group_id] = time.time()
-        if not (is_admin and self.config.get("admin_ignore_limit", True)):
-            self._total_count += num
-            self._user_counts[sender_id] = self._user_counts.get(sender_id, 0) + num
+        self._total_count += num
+        self._user_counts[sender_id] = self._user_counts.get(sender_id, 0) + num
 
     def _save_image(self, img_b64: str, mime: str = "image/png") -> str:
         ext = EXT_BY_MIME.get(mime, "png")
         fname = f"eid_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.{ext}"
         path = self.image_dir / fname
-        path.write_bytes(base64.b64decode(img_b64))
+        try:
+            raw = img_b64.strip()
+            if raw.startswith("data:"):  # 兼容 data:image/png;base64, 前缀
+                raw = raw.split(",", 1)[-1]
+            path.write_bytes(base64.b64decode(raw))
+        except Exception as e:
+            raise RuntimeError(f"图片数据解码失败: {e}") from e
         return str(path)
 
     async def _post(self, url: str, headers: dict, payload: dict) -> dict:
-        """统一 POST:代理/超时/重试(仅超时与 5xx)/错误分类"""
-        timeout = httpx.Timeout(float(self.config.get("request_timeout", 90)))
+        """统一 POST:代理/超时/重试/错误分类,全程日志
+
+        重试策略:仅网络类错误(连接/代理)重试;ReadTimeout(服务端生成慢)不重试,
+        避免重复计费与更长等待。
+        """
+        timeout = httpx.Timeout(float(self.config.get("request_timeout", 300)))
+        proxy = self._proxy()
+        logger.info(f"API 请求 {url} proxy={proxy!r}")
         last_err: Exception | None = None
         for attempt in range(3):
+            started = time.time()
+            retryable = True
             try:
-                async with httpx.AsyncClient(proxy=self._proxy(), timeout=timeout) as client:
+                async with httpx.AsyncClient(proxy=proxy, timeout=timeout) as client:
                     resp = await client.post(url, headers=headers, json=payload)
+                elapsed = time.time() - started
                 if resp.status_code == 429:
                     raise RuntimeError("API 限流(429),请稍后再试或调大冷却时间")
                 resp.raise_for_status()
+                logger.info(f"API 响应 {resp.status_code} 耗时 {elapsed:.1f}s (第{attempt + 1}次)")
                 return resp.json()
+            except httpx.ConnectTimeout:
+                last_err = RuntimeError("连接方舟 API 超时,请检查网络;若配置了代理请确认代理可用或关闭代理")
+            except httpx.ReadTimeout:
+                last_err = RuntimeError(
+                    f"方舟生成超时(超过 {timeout.read:.0f}s):生成耗时过长,可调大 request_timeout "
+                    "或使用更短提示词/更低分辨率")
+                retryable = False
+            except httpx.WriteTimeout:
+                last_err = RuntimeError("发送请求超时,请检查网络")
+                retryable = False
             except httpx.TimeoutException:
                 last_err = RuntimeError("请求 API 超时,请检查网络/代理配置")
+            except httpx.ConnectError:
+                last_err = RuntimeError("无法连接方舟 API,请检查网络与代理配置")
             except httpx.ProxyError:
-                last_err = RuntimeError("无法连接代理,请检查 proxy 配置")
+                last_err = RuntimeError("无法连接代理,请检查 proxy 配置或关闭代理")
             except httpx.HTTPStatusError as e:
                 if e.response.status_code >= 500:
                     last_err = RuntimeError(f"API 服务端错误({e.response.status_code})")
@@ -266,7 +362,9 @@ class EidolonPlugin(Star):
                                        f"{e.response.text[:200]}") from e
             except httpx.HTTPError as e:
                 last_err = RuntimeError(f"网络请求失败: {e}")
-            if attempt < 2:
+            elapsed = time.time() - started
+            logger.error(f"API 请求失败(第{attempt + 1}次) 耗时 {elapsed:.1f}s: {last_err}")
+            if attempt < 2 and retryable:
                 await asyncio.sleep(2 * (attempt + 1))
         raise last_err or RuntimeError("生成失败,请稍后再试")
 
@@ -280,20 +378,20 @@ class EidolonPlugin(Star):
             return f"{prompt.strip()},{desc}"
         return prompt.strip()
 
-    async def _call_seedream(self, prompt: str, aspect: str,
-                             image_size: str = "") -> tuple[str, str]:
+    async def _call_seedream(self, prompt: str, aspect: str, image_size: str = "",
+                             api_key: str = "", model: str = "") -> tuple[str, str]:
         """火山方舟 Seedream 图片生成(OpenAI 兼容子集)
 
         官方文档要点:
           - size: 分辨率档位(1K/1.5K/2K),宽高比通过 prompt 自然语言描述(方式1,推荐)
-          - response_format: url(24h 有效) / b64_json
+          - response_format 默认 url(响应体小,避免大 JSON 传输超时),失败降级 b64_json
           - watermark/output_format 独立参数,无 seed 参数
           - 顶层 error 为整体错误;data[].error 为单图错误
         """
-        key = self._api_key()
+        key = (api_key or "").strip() or self._api_key()
         if not key:
             raise RuntimeError("未配置火山方舟 API Key(seedream_api_key)")
-        model = (self.config.get("seedream_model") or "").strip() \
+        model = (model or "").strip() or (self.config.get("seedream_model") or "").strip() \
             or "doubao-seedream-5-0-pro"
         image_size = image_size or str(self.config.get("image_size", "2K"))
         if image_size not in VALID_SIZES:
@@ -306,7 +404,7 @@ class EidolonPlugin(Star):
             "model": model,
             "prompt": self._build_prompt(prompt, aspect),
             "size": image_size,
-            "response_format": "b64_json",
+            "response_format": "url",
             "output_format": output_format,
             "watermark": bool(self.config.get("watermark", True)),
         }
@@ -314,9 +412,9 @@ class EidolonPlugin(Star):
         try:
             data = await self._post(url, headers, payload)
         except RuntimeError as e:
-            # 平台不支持 b64_json 时降级为 url
+            # 平台不支持 url 时降级为 b64_json
             if "response_format" in str(e) or "invalid" in str(e).lower() or "参数" in str(e):
-                payload["response_format"] = "url"
+                payload["response_format"] = "b64_json"
                 data = await self._post(url, headers, payload)
             else:
                 raise
@@ -330,59 +428,62 @@ class EidolonPlugin(Star):
         if item.get("error"):
             err = item["error"]
             raise RuntimeError(f"生成失败: {err.get('code', '')} {err.get('message', '')}".strip())
-        b64 = item.get("b64_json")
-        if b64:
-            mime = f"image/{output_format}"
-            return self._save_image(b64, mime), mime
         if item.get("url"):
             return await self._download(item["url"]), f"image/{output_format}"
-        raise RuntimeError("响应中未找到图片(b64_json/url 均缺失)")
+        if item.get("b64_json"):
+            mime = f"image/{output_format}"
+            return self._save_image(item["b64_json"], mime), mime
+        raise RuntimeError("响应中未找到图片(url/b64_json 均缺失)")
 
     async def _download(self, url: str) -> str:
-        async with httpx.AsyncClient(proxy=self._proxy(),
-                                     timeout=httpx.Timeout(float(self.config.get("request_timeout", 90)))) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
+        try:
+            async with httpx.AsyncClient(
+                    proxy=self._proxy(),
+                    timeout=httpx.Timeout(float(self.config.get("request_timeout", 180)))) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"图片下载失败({e.response.status_code})") from e
+        except httpx.TimeoutException:
+            raise RuntimeError("图片下载超时(图片链接可能已失效)") from None
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"图片下载失败: {e}") from e
         fmt = str(self.config.get("output_format", "png"))
         ext = "jpg" if fmt == "jpeg" else "png"
         path = self.image_dir / f"eid_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.{ext}"
         path.write_bytes(resp.content)
+        logger.info(f"图片下载完成 {path} ({len(resp.content)} bytes)")
         return str(path)
 
     async def _generate_one(self, prompt: str, aspect: str, image_size: str) -> tuple[str, str]:
         """适配层入口(当前仅 Seedream)"""
-        return await self._call_seedream(prompt, aspect)
+        return await self._call_seedream(prompt, aspect, image_size)
 
     # ------------------------------------------------------------------
-    # LLM 润色(可选)
+    # LLM 润色(可选,使用 AstrBot 已配置的模型提供商)
     # ------------------------------------------------------------------
     async def _enhance_prompt(self, prompt: str) -> str:
         lang = str(self.config.get("enhance_lang", "zh"))
         system_prompt = ENHANCE_SYSTEM_PROMPT_ZH if lang == "zh" else ENHANCE_SYSTEM_PROMPT_EN
-        base = (self.config.get("enhance_llm_base_url") or "").strip() or ARK_BASE
-        key = (self.config.get("enhance_llm_api_key") or "").strip() or self._api_key()
-        model = (self.config.get("enhance_llm_model") or "").strip() \
-            or ("gemini-3.1-flash-lite" if lang == "en" else "doubao-1-5-pro")
-        url = self._join(base, "chat/completions")
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt},
-            ],
-            "temperature": 0.9,
-            "max_tokens": 300,
-        }
-        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-        data = await self._post(url, headers, payload)
-        return (data.get("choices") or [{}])[0].get("message", {}).get("content", "").strip()
+        provider_id = (self.config.get("enhance_provider_id") or "").strip()
+        if not provider_id:
+            raise RuntimeError("未选择润色模型(enhance_provider_id 为空)")
+        provider = self.context.get_provider_by_id(provider_id)
+        if provider is None:
+            raise RuntimeError(f"未找到模型提供商: {provider_id},请重新选择")
+        resp = await provider.text_chat(
+            prompt=prompt,
+            session_id="",
+            system_prompt=system_prompt,
+        )
+        text = getattr(resp, "completion_text", "") or ""
+        return text.strip()
 
     # ------------------------------------------------------------------
     # 共享生图流程
     # ------------------------------------------------------------------
     async def _generate_and_send(self, event: AstrMessageEvent, prompt: str,
-                                 num: int = 1, aspect: str = "", image_size: str = "",
-                                 is_nl: bool = False):
+                                 num: int = 1, aspect: str = "", image_size: str = ""):
         sender_id = event.get_sender_id()
         is_admin = event.is_admin()
         group_id = event.get_group_id() or event.unified_msg_origin
@@ -399,8 +500,8 @@ class EidolonPlugin(Star):
 
         async with self._get_lock(group_id):  # 同群串行
             logger.info(f"生图 group={group_id} sender={sender_id} prompt={prompt[:50]!r}")
-            if is_nl:
-                yield event.plain_result("🎨 收到,正在生成图片,请稍等...")
+            yield event.plain_result(
+                "🎨 收到,正在生成图片,请稍等(高分辨率或长提示词可能需要 1~3 分钟)...")
             try:
                 if self.config.get("enable_prompt_enhance", False):
                     try:
@@ -411,10 +512,13 @@ class EidolonPlugin(Star):
                     except Exception as e:
                         logger.warning(f"提示词润色失败,回退原文: {e}")
                 for _ in range(num):
+                    started = time.time()
                     path, _mime = await self._generate_one(prompt, aspect, image_size)
+                    logger.info(f"出图成功 耗时 {time.time() - started:.1f}s 文件={path}")
                     yield event.image_result(path)
-            except RuntimeError as e:
-                yield event.plain_result(f"❌ {e}")
+            except Exception as e:
+                logger.exception(f"生图异常: {e}")
+                yield event.plain_result(f"❌ 生图失败: {e}")
             finally:
                 self._apply_quota(group_id, sender_id, num, is_admin)
 
@@ -467,6 +571,6 @@ class EidolonPlugin(Star):
         if not prompt or len(prompt) < int(self.config.get("nl_min_prompt_len", 5)):
             return
         logger.info(f"NL触发生图 group={event.get_group_id()} prompt={prompt[:50]!r}")
-        async for r in self._generate_and_send(event, prompt, 1, is_nl=True):
+        async for r in self._generate_and_send(event, prompt, 1):
             yield r
         event.stop_event()

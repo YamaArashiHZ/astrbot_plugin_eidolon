@@ -66,8 +66,10 @@
           </div>
           <div class="test-row">
             <button class="btn ghost" id="btn-test">测试连接</button>
+            <button class="btn ghost" id="btn-test-gen">测试生成</button>
             <span class="test-result" id="test-result"></span>
           </div>
+          <span class="hint">「测试生成」将实际调用方舟生成 1 张图(1K 档),消耗 1 张配额</span>
         </div>
       </section>
 
@@ -146,7 +148,7 @@
             </label>
           </div>
           <div class="field switch-line">
-            <span class="label">管理员无视限额 <em class="sub">群主/管理员,仍受冷却限制</em></span>
+            <span class="label">管理员无视限额 <em class="sub">指 AstrBot 全局管理员(WebUI 设置中的管理员),而非群主/群管理;开启后不受冷却与限额限制</em></span>
             <input type="checkbox" class="switch" id="admin_ignore_limit" />
           </div>
         </div>
@@ -193,20 +195,12 @@
               </div>
             </div>
           </div>
-          <label class="field">
-            <span class="label">润色模型</span>
-            <input type="text" id="enhance_llm_model" placeholder="doubao-1-5-pro" />
-            <span class="hint">方舟豆包文本模型 ID(以控制台为准),勿填 Seedream 图片模型</span>
-          </label>
-          <div class="grid-2">
-            <label class="field">
-              <span class="label">润色 LLM Base URL</span>
-              <input type="text" id="enhance_llm_base_url" placeholder="留空默认火山方舟" />
-            </label>
-            <label class="field">
-              <span class="label">润色 LLM Key</span>
-              <input type="password" id="enhance_llm_api_key" autocomplete="off" placeholder="留空复用主 API Key" />
-            </label>
+          <div class="field">
+            <span class="label">润色模型 <em class="sub">从 AstrBot 已配置的模型中选用</em></span>
+            <select id="enhance_provider_id">
+              <option value="">未选择</option>
+            </select>
+            <span class="hint">选择后由 AstrBot 对应模型完成提示词润色;未选择时润色功能自动回退原文</span>
           </div>
         </div>
       </section>
