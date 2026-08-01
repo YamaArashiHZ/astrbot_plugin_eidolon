@@ -38,6 +38,18 @@ EXT_BY_MIME = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 FLAG_RE = re.compile(r"(?:^|\s)-(n|a|s)\s+(\S+)")
 SAFETY_SUFFIX = ", high quality, detailed, safe for work, no text watermark"
 
+# 润色 system prompt 默认值(可在插件页面自定义,空则回退此默认值)
+ENHANCE_SYSTEM_PROMPT_ZH = (
+    "你是一名专业的 AI 绘画提示词工程师。请将用户的中文描述润色为:结构清晰、"
+    "细节丰富、适合图像生成模型的中文提示词。要求:只输出润色后的提示词本身,"
+    "不要任何解释、引号或多余内容。"
+)
+ENHANCE_SYSTEM_PROMPT_EN = (
+    "You are a professional AI image prompt engineer. Polish the user's description "
+    "into a well-structured, detailed English prompt suitable for image generation "
+    "models. Output ONLY the polished prompt, no explanations or quotes."
+)
+
 # 插件默认配置(插件页面编辑,存于 data/plugin_data/<plugin>/config.json)
 DEFAULT_CONFIG = {
     "seedream_api_key": "",
@@ -59,6 +71,8 @@ DEFAULT_CONFIG = {
     "enable_prompt_enhance": False,
     "enhance_lang": "zh",
     "enhance_provider_id": "",
+    "enhance_system_prompt_zh": ENHANCE_SYSTEM_PROMPT_ZH,
+    "enhance_system_prompt_en": ENHANCE_SYSTEM_PROMPT_EN,
 }
 
 # 宽高比 -> prompt 自然语言描述(方式1:模型据描述判断生成尺寸)
@@ -69,17 +83,6 @@ ASPECT_DESC = {
     "4:3": "横版构图,宽高比4:3 / landscape 4:3",
     "3:4": "竖版构图,宽高比3:4 / portrait 3:4",
 }
-
-ENHANCE_SYSTEM_PROMPT_ZH = (
-    "你是一名专业的 AI 绘画提示词工程师。请将用户的中文描述润色为:结构清晰、"
-    "细节丰富、适合图像生成模型的中文提示词。要求:只输出润色后的提示词本身,"
-    "不要任何解释、引号或多余内容。"
-)
-ENHANCE_SYSTEM_PROMPT_EN = (
-    "You are a professional AI image prompt engineer. Polish the user's description "
-    "into a well-structured, detailed English prompt suitable for image generation "
-    "models. Output ONLY the polished prompt, no explanations or quotes."
-)
 
 
 class EidolonPlugin(Star):
@@ -112,6 +115,8 @@ class EidolonPlugin(Star):
             f"/{plugin_name}/test-gen", self.web_test_gen, ["POST"], "测试生成(消耗 1 张配额)")
         context.register_web_api(
             f"/{plugin_name}/providers", self.web_get_providers, ["GET"], "获取 AstrBot 已配置的 LLM 模型列表")
+        context.register_web_api(
+            f"/{plugin_name}/prompt-defaults", self.web_get_prompt_defaults, ["GET"], "获取润色提示词默认值")
 
     # ------------------------------------------------------------------
     # 配置管理(插件页面读写,持久化到 data/plugin_data/<plugin>/config.json)
@@ -249,6 +254,13 @@ class EidolonPlugin(Star):
         except Exception as e:
             logger.exception(f"获取模型提供商列表失败: {e}")
             return error_response(f"获取模型列表失败: {e}", status_code=500)
+
+    async def web_get_prompt_defaults(self):
+        """返回润色 system prompt 默认值(供前端「恢复默认」按钮使用)"""
+        return json_response({
+            "zh": ENHANCE_SYSTEM_PROMPT_ZH,
+            "en": ENHANCE_SYSTEM_PROMPT_EN,
+        })
 
     # ------------------------------------------------------------------
     # 工具
@@ -464,7 +476,12 @@ class EidolonPlugin(Star):
     # ------------------------------------------------------------------
     async def _enhance_prompt(self, prompt: str) -> str:
         lang = str(self.config.get("enhance_lang", "zh"))
-        system_prompt = ENHANCE_SYSTEM_PROMPT_ZH if lang == "zh" else ENHANCE_SYSTEM_PROMPT_EN
+        if lang == "en":
+            system_prompt = (self.config.get("enhance_system_prompt_en") or "").strip() \
+                or ENHANCE_SYSTEM_PROMPT_EN
+        else:
+            system_prompt = (self.config.get("enhance_system_prompt_zh") or "").strip() \
+                or ENHANCE_SYSTEM_PROMPT_ZH
         provider_id = (self.config.get("enhance_provider_id") or "").strip()
         if not provider_id:
             raise RuntimeError("未选择润色模型(enhance_provider_id 为空)")

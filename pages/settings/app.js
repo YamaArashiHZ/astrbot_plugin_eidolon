@@ -4,6 +4,7 @@ const $ = (id) => document.getElementById(id);
 
 // 与后端 DEFAULT_CONFIG 对应的字段分组
 const TEXT_FIELDS = ["seedream_api_key", "seedream_model", "proxy"];
+const TEXTAREA_FIELDS = ["enhance_system_prompt_zh", "enhance_system_prompt_en"];
 const INT_FIELDS = [
   "max_num", "cooldown_seconds", "request_timeout",
   "total_limit", "per_user_limit", "nl_min_prompt_len",
@@ -61,10 +62,23 @@ function setGroupValue(field, val) {
 async function loadConfig() {
   const cfg = await bridge.apiGet("config");
   for (const k of TEXT_FIELDS) if ($(k)) $(k).value = cfg[k] ?? "";
+  for (const k of TEXTAREA_FIELDS) if ($(k)) $(k).value = cfg[k] ?? "";
   for (const k of INT_FIELDS) if ($(k)) $(k).value = cfg[k] ?? 0;
   for (const k of BOOL_FIELDS) if ($(k)) $(k).checked = Boolean(cfg[k]);
   for (const k of Object.keys(GROUP_FIELDS)) setGroupValue(k, cfg[k]);
   await loadProviders(cfg);
+}
+
+// ---------- 恢复润色提示词默认值 ----------
+async function restorePromptDefault(lang) {
+  const target = lang === "en" ? "enhance_system_prompt_en" : "enhance_system_prompt_zh";
+  try {
+    const defaults = await bridge.apiGet("prompt-defaults");
+    $(target).value = defaults[lang] || "";
+    toast(`已恢复${lang === "en" ? "英文" : "中文"}默认提示词,点击保存生效`);
+  } catch (e) {
+    toast("恢复默认失败: " + (e.message || e), true);
+  }
 }
 
 // ---------- 润色模型下拉(AstrBot 已配置的模型) ----------
@@ -105,6 +119,7 @@ async function loadStats() {
 function collectConfig() {
   const payload = {};
   for (const k of TEXT_FIELDS) payload[k] = $(k).value.trim();
+  for (const k of TEXTAREA_FIELDS) payload[k] = $(k).value;
   for (const k of INT_FIELDS) {
     const v = parseInt($(k).value, 10);
     payload[k] = Number.isFinite(v) ? v : 0;
@@ -182,6 +197,9 @@ function bindEvents() {
     const input = $("seedream_api_key");
     input.type = input.type === "password" ? "text" : "password";
   });
+  for (const btn of document.querySelectorAll(".restore-prompt")) {
+    btn.addEventListener("click", () => restorePromptDefault(btn.dataset.lang));
+  }
 }
 
 // ---------- 启动 ----------

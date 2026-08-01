@@ -101,7 +101,7 @@ body {
 .sub { font-style: normal; font-weight: 400; font-size: 12px; color: var(--text-2); }
 .hint { font-size: 12px; color: var(--text-2); }
 
-input[type="text"], input[type="password"], input[type="number"], select {
+input[type="text"], input[type="password"], input[type="number"], select, textarea {
   width: 100%; padding: 9px 12px;
   font-size: 13.5px; color: var(--text);
   background: var(--input-bg);
@@ -109,9 +109,13 @@ input[type="text"], input[type="password"], input[type="number"], select {
   border-radius: 9px; outline: none;
   transition: border-color .15s, box-shadow .15s;
 }
+textarea {
+  resize: vertical; min-height: 72px; line-height: 1.6;
+  font-family: "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+}
 select { cursor: pointer; appearance: none; -webkit-appearance: none; }
 select option { background: var(--card); color: var(--text); }
-input:focus, select:focus {
+input:focus, select:focus, textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
 }
@@ -213,6 +217,8 @@ input::placeholder { color: var(--text-2); opacity: .6; }
 }
 .btn.ghost:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .btn.ghost:disabled { opacity: .55; cursor: not-allowed; }
+.btn.small { padding: 5px 12px; font-size: 12.5px; border-radius: 7px; }
+.prompt-actions { display: flex; justify-content: flex-end; }
 
 /* ===== 测试连接 ===== */
 .test-row { display: flex; align-items: center; gap: 12px; }

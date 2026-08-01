@@ -202,6 +202,20 @@
             </select>
             <span class="hint">选择后由 AstrBot 对应模型完成提示词润色;未选择时润色功能自动回退原文</span>
           </div>
+          <div class="field">
+            <span class="label">中文润色提示词 <em class="sub">发给润色模型的系统提示词,可自定义</em></span>
+            <textarea id="enhance_system_prompt_zh" rows="4" spellcheck="false"></textarea>
+            <div class="prompt-actions">
+              <button type="button" class="btn ghost small restore-prompt" data-lang="zh">恢复默认</button>
+            </div>
+          </div>
+          <div class="field">
+            <span class="label">英文润色提示词 <em class="sub">「润色语言」选英文时使用</em></span>
+            <textarea id="enhance_system_prompt_en" rows="4" spellcheck="false"></textarea>
+            <div class="prompt-actions">
+              <button type="button" class="btn ghost small restore-prompt" data-lang="en">恢复默认</button>
+            </div>
+          </div>
         </div>
       </section>
     </main>
