@@ -888,7 +888,7 @@ input:focus, select:focus, textarea:focus {
   .card-head-row .segmented { width: 100%; }
   .card-head-row .segmented button { flex: 1; padding-inline: 7px; }
   .grid-2, .grid-3 { grid-template-columns: 1fr; }
-  .ratio-group { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; }
+  .ratio-group { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
   .ratio { width: auto; min-width: 0; min-height: 66px; padding: 7px 3px; }
   .segmented { max-width: 100%; }
   .segmented button { padding-inline: 12px; }

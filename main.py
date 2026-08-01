@@ -33,7 +33,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 ARK_BASE = "https://ark.cn-beijing.volces.com/api/v3"          # 火山方舟(Seedream)
 PLUGIN_NAME = "astrbot_plugin_eidolon"
-VALID_ASPECTS = {"1:1", "16:9", "9:16", "4:3", "3:4"}
+VALID_ASPECTS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"}
 VALID_SIZES = {"1K", "1.5K", "2K"}                            # Seedream 5.0 pro 档位
 EXT_BY_MIME = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 FLAG_RE = re.compile(r"(?:^|\s)[-－—](a|s)(?:\s+|=)(\S+)", re.IGNORECASE)
@@ -84,6 +84,9 @@ ASPECT_DESC = {
     "9:16": "竖版构图,宽高比9:16 / portrait 9:16",
     "4:3": "横版构图,宽高比4:3 / landscape 4:3",
     "3:4": "竖版构图,宽高比3:4 / portrait 3:4",
+    "3:2": "横版构图,宽高比3:2 / landscape 3:2",
+    "2:3": "竖版构图,宽高比2:3 / portrait 2:3",
+    "21:9": "超宽横版构图,宽高比21:9 / ultra-wide 21:9",
 }
 
 
