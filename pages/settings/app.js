@@ -27,6 +27,174 @@ let groupValues = {}; // 当前分段选择器的值
 let toastTimer = null;
 let aboutLoaded = false;
 let confirmResolve = null;
+const customSelects = new Map();
+
+function syncSegmentedIndicator(box, animate = true) {
+  if (!box) return;
+  let indicator = box.querySelector(":scope > .selection-indicator");
+  if (!indicator) {
+    indicator = document.createElement("span");
+    indicator.className = "selection-indicator";
+    indicator.setAttribute("aria-hidden", "true");
+    box.prepend(indicator);
+  }
+  const active = box.querySelector("button.active");
+  if (!active || box.offsetWidth === 0) {
+    indicator.classList.remove("visible");
+    return;
+  }
+  indicator.classList.toggle("no-motion", !animate);
+  indicator.style.setProperty("--indicator-x", `${active.offsetLeft}px`);
+  indicator.style.setProperty("--indicator-y", `${active.offsetTop}px`);
+  indicator.style.setProperty("--indicator-w", `${active.offsetWidth}px`);
+  indicator.style.setProperty("--indicator-h", `${active.offsetHeight}px`);
+  indicator.classList.add("visible");
+  if (!animate) requestAnimationFrame(() => indicator.classList.remove("no-motion"));
+}
+
+function syncAllSegmentedIndicators(animate = true) {
+  for (const box of document.querySelectorAll(".segmented")) {
+    syncSegmentedIndicator(box, animate);
+  }
+}
+
+function closeCustomSelects(except = null) {
+  for (const control of customSelects.values()) {
+    if (control !== except) {
+      control.wrapper.classList.remove("open");
+      control.trigger.setAttribute("aria-expanded", "false");
+    }
+  }
+}
+
+function syncCustomSelect(select) {
+  const control = customSelects.get(select);
+  if (!control) return;
+  const selected = select.selectedOptions[0];
+  control.value.textContent = selected?.textContent || "请选择";
+  control.trigger.classList.toggle("placeholder", !select.value);
+  control.trigger.disabled = select.disabled;
+  for (const option of control.menu.querySelectorAll("button")) {
+    const active = option.dataset.value === select.value;
+    option.classList.toggle("selected", active);
+    option.setAttribute("aria-selected", String(active));
+  }
+}
+
+function refreshCustomSelect(select) {
+  const control = customSelects.get(select);
+  if (!control) return;
+  control.menu.replaceChildren(...Array.from(select.options, (nativeOption) => {
+    const option = document.createElement("button");
+    option.type = "button";
+    option.className = "select-option";
+    option.dataset.value = nativeOption.value;
+    option.textContent = nativeOption.textContent;
+    option.disabled = nativeOption.disabled;
+    option.setAttribute("role", "option");
+    option.addEventListener("click", () => {
+      if (select.value !== nativeOption.value) {
+        select.value = nativeOption.value;
+        select.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      syncCustomSelect(select);
+      control.wrapper.classList.remove("open");
+      control.trigger.setAttribute("aria-expanded", "false");
+      control.trigger.focus();
+    });
+    return option;
+  }));
+  syncCustomSelect(select);
+}
+
+function initCustomSelect(select) {
+  if (customSelects.has(select)) return;
+  const wrapper = document.createElement("div");
+  wrapper.className = "custom-select";
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "select-trigger";
+  trigger.setAttribute("aria-haspopup", "listbox");
+  trigger.setAttribute("aria-expanded", "false");
+  const value = document.createElement("span");
+  value.className = "select-value";
+  const arrow = document.createElement("span");
+  arrow.className = "select-arrow";
+  arrow.setAttribute("aria-hidden", "true");
+  const menu = document.createElement("div");
+  menu.className = "select-menu";
+  menu.setAttribute("role", "listbox");
+  trigger.append(value, arrow);
+  wrapper.append(trigger, menu);
+  select.after(wrapper);
+  select.classList.add("native-select-hidden");
+  customSelects.set(select, { wrapper, trigger, value, menu });
+  trigger.addEventListener("click", () => {
+    const opening = !wrapper.classList.contains("open");
+    closeCustomSelects(opening ? customSelects.get(select) : null);
+    wrapper.classList.toggle("open", opening);
+    trigger.setAttribute("aria-expanded", String(opening));
+    if (opening) menu.querySelector(".selected")?.scrollIntoView({ block: "nearest" });
+  });
+  trigger.addEventListener("keydown", (e) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End", "Escape"].includes(e.key)) return;
+    e.preventDefault();
+    if (e.key === "Escape") {
+      wrapper.classList.remove("open");
+      trigger.setAttribute("aria-expanded", "false");
+      return;
+    }
+    const options = [...select.options].filter((option) => !option.disabled);
+    let index = Math.max(0, options.findIndex((option) => option.value === select.value));
+    if (e.key === "ArrowDown") index = Math.min(options.length - 1, index + 1);
+    if (e.key === "ArrowUp") index = Math.max(0, index - 1);
+    if (e.key === "Home") index = 0;
+    if (e.key === "End") index = options.length - 1;
+    const next = options[index];
+    if (next && select.value !== next.value) {
+      select.value = next.value;
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      syncCustomSelect(select);
+    }
+  });
+  select.addEventListener("change", () => syncCustomSelect(select));
+  refreshCustomSelect(select);
+}
+
+function initCustomSelects() {
+  for (const select of document.querySelectorAll("select")) initCustomSelect(select);
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest(".custom-select")) closeCustomSelects();
+  });
+}
+
+function initSmoothWheelScroll() {
+  const content = document.querySelector(".content");
+  let target = content.scrollTop;
+  let frame = 0;
+  const tick = () => {
+    const distance = target - content.scrollTop;
+    if (Math.abs(distance) < .5) {
+      content.scrollTop = target;
+      frame = 0;
+      return;
+    }
+    content.scrollTop += distance * .16;
+    frame = requestAnimationFrame(tick);
+  };
+  content.addEventListener("scroll", () => {
+    if (!frame) target = content.scrollTop;
+  }, { passive: true });
+  content.addEventListener("wheel", (e) => {
+    if (e.ctrlKey || e.target.closest(".select-menu, textarea")) return;
+    const max = content.scrollHeight - content.clientHeight;
+    if (max <= 0) return;
+    const delta = e.deltaMode === 1 ? e.deltaY * 32 : e.deltaMode === 2 ? e.deltaY * content.clientHeight : e.deltaY;
+    target = Math.max(0, Math.min(max, target + delta));
+    e.preventDefault();
+    if (!frame) frame = requestAnimationFrame(tick);
+  }, { passive: false });
+}
 
 // ---------- 主题 ----------
 function applyTheme(ctx) {
@@ -79,6 +247,7 @@ function switchView(name) {
   for (const v of document.querySelectorAll(".view")) {
     v.classList.toggle("active", v.id === "view-" + name);
   }
+  requestAnimationFrame(() => syncAllSegmentedIndicators(false));
   if (name === "quota") loadQuota();
   if (name === "about" && !aboutLoaded) {
     aboutLoaded = true;
@@ -103,6 +272,7 @@ function setGroupValue(field, val) {
   for (const btn of box.querySelectorAll("[data-val]")) {
     btn.classList.toggle("active", btn.dataset.val === val);
   }
+  syncSegmentedIndicator(box);
   if (field === "nl_trigger_mode") updateNlModeUI();
 }
 
@@ -150,6 +320,7 @@ async function loadProviders(cfg) {
       }
     }
     sel.value = (cfg && cfg[id]) || "";
+    refreshCustomSelect(sel);
   }
 }
 
@@ -531,8 +702,10 @@ function bindEvents() {
     for (const b of $("quota_sort_group").querySelectorAll("[data-val]")) {
       b.classList.toggle("active", b.dataset.val === quotaSort);
     }
+    syncSegmentedIndicator($("quota_sort_group"));
     loadQuota();
   });
+  window.addEventListener("resize", () => syncAllSegmentedIndicators(false));
 }
 
 // ---------- 启动 ----------
@@ -540,7 +713,10 @@ const ctx = await bridge.ready();
 applyTheme(ctx);
 bridge.onContext(applyTheme);
 initGroups();
+initCustomSelects();
+initSmoothWheelScroll();
 bindEvents();
 await loadConfig();
+syncAllSegmentedIndicators(false);
 await loadStats();
 await loadCache();
