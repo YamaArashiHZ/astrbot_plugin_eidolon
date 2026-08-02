@@ -74,6 +74,7 @@ DEFAULT_CONFIG = {
     "per_user_limit": 0,
     "admin_ignore_limit": True,
     "request_timeout": 300,
+    "image_cache_max_mb": 500,
     "enable_nl_trigger": False,
     "nl_min_prompt_len": 5,
     "nl_trigger_mode": "keyword",
@@ -106,14 +107,17 @@ class EidolonPlugin(Star):
         plugin_name = getattr(self, "name", PLUGIN_NAME)
         self.plugin_name = plugin_name
         self.data_dir = Path(get_astrbot_data_path()) / "plugin_data" / plugin_name
-        self.image_dir = self.data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.image_dir = self.data_dir / "images"
+        self.image_dir.mkdir(parents=True, exist_ok=True)
         self.config_path = self.data_dir / "config.json"
         self.config = self._load_config()
 
         self._generation_condition = asyncio.Condition()
         self._generation_queue: deque[object] = deque()
         self._active_generations = 0
+        self._active_image_paths: set[Path] = set()
+        self._clear_cache_pending = False
         self._last_gen_at: dict[str, float] = {}
         self._total_count = 0
         self._user_counts: dict[str, int] = {}
@@ -131,6 +135,10 @@ class EidolonPlugin(Star):
             f"/{plugin_name}/config/save", self.web_save_config, ["POST"], "保存插件配置")
         context.register_web_api(
             f"/{plugin_name}/stats", self.web_get_stats, ["GET"], "获取今日用量")
+        context.register_web_api(
+            f"/{plugin_name}/cache", self.web_get_cache, ["GET"], "获取图片缓存状态")
+        context.register_web_api(
+            f"/{plugin_name}/cache/clear", self.web_clear_cache, ["POST"], "清空图片缓存")
         context.register_web_api(
             f"/{plugin_name}/test", self.web_test_key, ["POST"], "测试 API Key 连通性")
         context.register_web_api(
@@ -185,6 +193,11 @@ class EidolonPlugin(Star):
                 if k == "max_concurrency":
                     try:
                         v = min(100, max(1, int(v)))
+                    except (TypeError, ValueError):
+                        v = DEFAULT_CONFIG[k]
+                elif k == "image_cache_max_mb":
+                    try:
+                        v = max(1, int(v))
                     except (TypeError, ValueError):
                         v = DEFAULT_CONFIG[k]
                 self.config[k] = v
@@ -260,6 +273,7 @@ class EidolonPlugin(Star):
         ignored = [k for k in payload if k not in DEFAULT_CONFIG]
         try:
             self._save_config(payload)
+            self._prune_image_cache()
         except Exception as e:
             logger.error(f"配置保存失败: {e}")
             return error_response(f"保存配置失败：{e}", status_code=500)
@@ -277,6 +291,32 @@ class EidolonPlugin(Star):
             "total_used": self._total_count,
             "total_generated": sum(self._total_usage.values()),
             "per_user_limit": int(self.config.get("per_user_limit", 0)),
+        })
+
+    async def web_get_cache(self):
+        """返回生成图片缓存用量。"""
+        files = self._cached_image_files()
+        total_bytes = sum(size for _path, size, _mtime in files)
+        return json_response({
+            "file_count": len(files),
+            "total_bytes": total_bytes,
+            "total_mb": round(total_bytes / (1024 * 1024), 2),
+            "max_mb": self._image_cache_limit_mb(),
+        })
+
+    async def web_clear_cache(self):
+        """清空插件生成的图片缓存，不影响配置和用量数据。"""
+        self._clear_cache_pending = bool(self._active_image_paths)
+        deleted_count, deleted_bytes = self._clear_image_cache()
+        logger.info(
+            "图片缓存已清空 count=%s bytes=%s (来自插件页面)",
+            deleted_count,
+            deleted_bytes,
+        )
+        return json_response({
+            "ok": True,
+            "deleted_count": deleted_count,
+            "deleted_bytes": deleted_bytes,
         })
 
     async def web_test_key(self):
@@ -560,6 +600,75 @@ class EidolonPlugin(Star):
         self._user_counts[sender_id] = self._user_counts.get(sender_id, 0) + num
         self._save_usage()
 
+    def _image_cache_limit_mb(self) -> int:
+        try:
+            return max(1, int(self.config.get("image_cache_max_mb", 500)))
+        except (TypeError, ValueError):
+            return 500
+
+    def _cached_image_files(self) -> list[tuple[Path, int, float]]:
+        """列出插件生成的缓存图片；兼容旧版本保存在 data_dir 根目录的文件。"""
+        files: list[tuple[Path, int, float]] = []
+        candidates = list(self.image_dir.glob("eid_*"))
+        if self.image_dir != self.data_dir:
+            candidates.extend(self.data_dir.glob("eid_*"))
+        for path in candidates:
+            try:
+                if path.is_file():
+                    stat = path.stat()
+                    files.append((path, stat.st_size, stat.st_mtime))
+            except OSError as e:
+                logger.warning(f"读取缓存图片信息失败 {path}: {e}")
+        return files
+
+    def _prune_image_cache(self, preserve: Path | None = None) -> tuple[int, int]:
+        """按修改时间删除最旧缓存，直至总大小不超过配置上限。"""
+        limit_bytes = self._image_cache_limit_mb() * 1024 * 1024
+        files = self._cached_image_files()
+        total_bytes = sum(size for _path, size, _mtime in files)
+        deleted_count = 0
+        deleted_bytes = 0
+        preserve_resolved = preserve.resolve() if preserve else None
+        protected = {path.resolve() for path in self._active_image_paths}
+        for path, size, _mtime in sorted(files, key=lambda item: item[2]):
+            if total_bytes <= limit_bytes:
+                break
+            try:
+                resolved = path.resolve()
+                if resolved in protected or (
+                        preserve_resolved is not None and resolved == preserve_resolved):
+                    continue
+                path.unlink()
+                total_bytes -= size
+                deleted_count += 1
+                deleted_bytes += size
+            except OSError as e:
+                logger.warning(f"清理缓存图片失败 {path}: {e}")
+        if deleted_count:
+            logger.info(
+                "图片缓存自动清理 count=%s bytes=%s remaining=%s limit=%s",
+                deleted_count,
+                deleted_bytes,
+                total_bytes,
+                limit_bytes,
+            )
+        return deleted_count, deleted_bytes
+
+    def _clear_image_cache(self) -> tuple[int, int]:
+        deleted_count = 0
+        deleted_bytes = 0
+        protected = {path.resolve() for path in self._active_image_paths}
+        for path, size, _mtime in self._cached_image_files():
+            try:
+                if path.resolve() in protected:
+                    continue
+                path.unlink()
+                deleted_count += 1
+                deleted_bytes += size
+            except OSError as e:
+                logger.warning(f"清空缓存图片失败 {path}: {e}")
+        return deleted_count, deleted_bytes
+
     def _save_image(self, img_b64: str, mime: str = "image/png") -> str:
         ext = EXT_BY_MIME.get(mime, "png")
         fname = f"eid_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.{ext}"
@@ -569,6 +678,7 @@ class EidolonPlugin(Star):
             if raw.startswith("data:"):  # 兼容 data:image/png;base64, 前缀
                 raw = raw.split(",", 1)[-1]
             path.write_bytes(base64.b64decode(raw))
+            self._prune_image_cache(preserve=path)
         except Exception as e:
             raise RuntimeError(f"图片数据解码失败：{e}") from e
         return str(path)
@@ -727,6 +837,7 @@ class EidolonPlugin(Star):
         ext = "jpg" if fmt == "jpeg" else "png"
         path = self.image_dir / f"eid_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.{ext}"
         path.write_bytes(resp.content)
+        self._prune_image_cache(preserve=path)
         logger.info(f"图片下载完成 {path} ({len(resp.content)} bytes)")
         return str(path)
 
@@ -859,7 +970,17 @@ class EidolonPlugin(Star):
                 path, _mime = await self._generate_one(prompt, aspect, image_size)
                 success_count = 1
                 logger.info(f"出图成功 耗时 {time.time() - started:.1f}s 文件={path}")
-                yield event.image_result(path)
+                active_path = Path(path).resolve()
+                self._active_image_paths.add(active_path)
+                try:
+                    yield event.image_result(path)
+                finally:
+                    self._active_image_paths.discard(active_path)
+                    if self._clear_cache_pending:
+                        self._clear_image_cache()
+                        self._clear_cache_pending = bool(self._active_image_paths)
+                    else:
+                        self._prune_image_cache()
             except Exception as e:
                 logger.exception(f"生图异常: {e}")
                 yield event.plain_result(f"图片生成失败：{e}")

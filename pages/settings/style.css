@@ -308,6 +308,8 @@ input::placeholder { color: var(--text-2); opacity: .6; }
 .test-result { font-size: 12.5px; }
 .test-result.ok { color: var(--ok); }
 .test-result.err { color: var(--err); }
+.cache-action { align-self: stretch; }
+.cache-action .btn { align-self: flex-start; }
 
 /* ===== 保存区(设置视图内底部) ===== */
 .save-area {

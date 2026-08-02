@@ -162,6 +162,28 @@
           </div>
         </section>
 
+        <!-- 图片缓存 -->
+        <section class="card">
+          <div class="card-head">
+            <h2>图片缓存</h2>
+            <p>限制生成图片占用的磁盘空间，超过上限后自动删除最旧图片</p>
+          </div>
+          <div class="card-body">
+            <div class="grid-2 cache-controls">
+              <label class="field">
+                <span class="label">最大缓存（MB）</span>
+                <input type="number" id="image_cache_max_mb" min="1" />
+                <span class="hint" id="cache-status">正在读取缓存状态…</span>
+              </label>
+              <div class="field cache-action">
+                <span class="label">缓存维护</span>
+                <button type="button" class="btn danger" id="btn-clear-cache">清空缓存</button>
+                <span class="hint">仅删除 Eidolon 生成的本地图片，不影响配置与用量记录</span>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <!-- 限额管理 -->
         <section class="card">
           <div class="card-head">

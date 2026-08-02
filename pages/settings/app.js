@@ -8,6 +8,7 @@ const TEXTAREA_FIELDS = ["nl_keywords", "enhance_system_prompt_zh", "enhance_sys
 const INT_FIELDS = [
   "max_concurrency", "cooldown_seconds", "request_timeout",
   "total_limit", "per_user_limit", "nl_min_prompt_len", "enhance_timeout",
+  "image_cache_max_mb",
 ];
 const BOOL_FIELDS = [
   "enable_proxy", "watermark", "admin_ignore_limit",
@@ -186,6 +187,38 @@ async function loadStats() {
   } catch { /* 状态不可用时不影响配置 */ }
 }
 
+async function loadCache() {
+  try {
+    const cache = await bridge.apiGet("cache");
+    $("cache-status").textContent =
+      `当前 ${cache.total_mb ?? 0} MB / ${cache.max_mb ?? 0} MB，共 ${cache.file_count ?? 0} 张图片`;
+  } catch (e) {
+    $("cache-status").textContent = "缓存状态加载失败";
+    console.error("load cache:", e);
+  }
+}
+
+async function clearCache() {
+  const confirmed = await askConfirm({
+    title: "清空图片缓存",
+    message: "所有已生成并保存在本地的缓存图片将被删除，此操作无法恢复。配置和用量记录不会受影响。",
+    confirmText: "清空缓存",
+    danger: true,
+  });
+  if (!confirmed) return;
+  const btn = $("btn-clear-cache");
+  btn.disabled = true;
+  try {
+    const result = await bridge.apiPost("cache/clear", {});
+    toast(`已清空 ${result.deleted_count ?? 0} 张缓存图片`);
+    await loadCache();
+  } catch (e) {
+    toast("清空缓存失败：" + (e.message || e), true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ---------- 收集 / 保存 ----------
 function collectConfig() {
   const payload = {};
@@ -214,6 +247,7 @@ async function save() {
     await bridge.apiPost("config/save", collectConfig());
     toast("配置已保存并生效");
     $("save-tip").textContent = "配置已保存";
+    await loadCache();
   } catch (e) {
     toast("保存失败：" + (e.message || e), true);
   } finally {
@@ -462,6 +496,7 @@ function bindEvents() {
   $("btn-save").addEventListener("click", save);
   $("btn-test").addEventListener("click", testKey);
   $("btn-test-gen").addEventListener("click", testGen);
+  $("btn-clear-cache").addEventListener("click", clearCache);
   $("toggle-key").addEventListener("click", () => {
     const input = $("seedream_api_key");
     input.type = input.type === "password" ? "text" : "password";
@@ -508,3 +543,4 @@ initGroups();
 bindEvents();
 await loadConfig();
 await loadStats();
+await loadCache();
