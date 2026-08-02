@@ -2,7 +2,7 @@
   "metadata": {
     "display_name": "Eidolon",
     "short_desc": "Seedream 5.0 Pro 群聊文生图插件",
-    "desc": "基于火山方舟 Seedream 5.0 Pro 的 AstrBot 群聊文生图插件，支持指令与自然语言触发、并发队列、用量限制和 LLM 提示词润色"
+    "desc": "基于火山方舟 Seedream 5.0 Pro 的 AstrBot 群聊文生图插件，支持指令与自然语言触发（关键词或 LLM 意图判断）、并发队列、用量限制和 LLM 提示词润色"
   },
   "pages": {
     "settings": {

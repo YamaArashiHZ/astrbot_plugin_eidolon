@@ -374,6 +374,7 @@ input::placeholder { color: var(--text-2); opacity: .6; }
   border-radius: 999px;
 }
 .quota-progress.hidden { visibility: hidden; }
+.field.hidden { display: none; }
 .quota-progress i {
   display: block;
   width: 0;

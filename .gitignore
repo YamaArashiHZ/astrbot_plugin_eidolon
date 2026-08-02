@@ -1,3 +1,4 @@
 .docs/
 .temp/
 __pycache__/
+data/

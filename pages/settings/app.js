@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 
 // 与后端 DEFAULT_CONFIG 对应的字段分组
 const TEXT_FIELDS = ["seedream_api_key", "seedream_model", "proxy"];
-const TEXTAREA_FIELDS = ["enhance_system_prompt_zh", "enhance_system_prompt_en"];
+const TEXTAREA_FIELDS = ["nl_keywords", "enhance_system_prompt_zh", "enhance_system_prompt_en"];
 const INT_FIELDS = [
   "max_concurrency", "cooldown_seconds", "request_timeout",
   "total_limit", "per_user_limit", "nl_min_prompt_len",
@@ -19,6 +19,7 @@ const GROUP_FIELDS = {
   image_size: "image_size_group",
   output_format: "output_format_group",
   enhance_lang: "enhance_lang_group",
+  nl_trigger_mode: "nl_trigger_mode_group",
 };
 
 let groupValues = {}; // 当前分段选择器的值
@@ -101,6 +102,14 @@ function setGroupValue(field, val) {
   for (const btn of box.querySelectorAll("[data-val]")) {
     btn.classList.toggle("active", btn.dataset.val === val);
   }
+  if (field === "nl_trigger_mode") updateNlModeUI();
+}
+
+// 根据生图意图判断方式切换相关字段的显示
+function updateNlModeUI() {
+  const llm = groupValues.nl_trigger_mode === "llm";
+  $("nl_keywords_field").classList.toggle("hidden", llm);
+  $("nl_judge_field").classList.toggle("hidden", !llm);
 }
 
 // ---------- 加载 / 渲染 ----------
@@ -114,14 +123,23 @@ async function loadConfig() {
   await loadProviders(cfg);
 }
 
-// ---------- 润色模型下拉(AstrBot 已配置的模型) ----------
+// ---------- 润色 / 判断模型下拉(AstrBot 已配置的模型) ----------
 async function loadProviders(cfg) {
-  const sel = $("enhance_provider_id");
-  sel.innerHTML = "";
+  let list = [];
+  let loadError = false;
   try {
     const data = await bridge.apiGet("providers");
-    const list = data.providers || [];
-    if (list.length === 0) {
+    list = data.providers || [];
+  } catch (e) {
+    loadError = true;
+    console.error("load providers:", e);
+  }
+  for (const id of ["enhance_provider_id", "nl_judge_provider_id"]) {
+    const sel = $(id);
+    sel.innerHTML = "";
+    if (loadError) {
+      sel.add(new Option("加载模型列表失败", ""));
+    } else if (list.length === 0) {
       sel.add(new Option("暂无可用模型，请先在 AstrBot 中配置", ""));
     } else {
       sel.add(new Option("未选择", ""));
@@ -130,10 +148,7 @@ async function loadProviders(cfg) {
         sel.add(new Option(label, p.id));
       }
     }
-    sel.value = (cfg && cfg.enhance_provider_id) || "";
-  } catch (e) {
-    sel.add(new Option("加载模型列表失败", ""));
-    console.error("load providers:", e);
+    sel.value = (cfg && cfg[id]) || "";
   }
 }
 
@@ -144,6 +159,17 @@ async function restorePromptDefault(lang) {
     const defaults = await bridge.apiGet("prompt-defaults");
     $(target).value = defaults[lang] || "";
     toast(`已恢复${lang === "en" ? "英文" : "中文"}默认提示词，请保存配置以应用`);
+  } catch (e) {
+    toast("恢复默认失败：" + (e.message || e), true);
+  }
+}
+
+// ---------- 恢复触发关键词默认值 ----------
+async function restoreKeywords() {
+  try {
+    const defaults = await bridge.apiGet("prompt-defaults");
+    $("nl_keywords").value = defaults.nl_keywords || "";
+    toast("已恢复默认触发关键词，请保存配置以应用");
   } catch (e) {
     toast("恢复默认失败：" + (e.message || e), true);
   }
@@ -171,8 +197,10 @@ function collectConfig() {
   }
   for (const k of BOOL_FIELDS) payload[k] = $(k).checked;
   Object.assign(payload, groupValues);
-  const sel = $("enhance_provider_id");
-  payload.enhance_provider_id = (sel ? sel.value : "").trim();
+  for (const id of ["enhance_provider_id", "nl_judge_provider_id"]) {
+    const sel = $(id);
+    payload[id] = (sel ? sel.value : "").trim();
+  }
   return payload;
 }
 
@@ -438,6 +466,9 @@ function bindEvents() {
   });
   for (const btn of document.querySelectorAll(".restore-prompt")) {
     btn.addEventListener("click", () => restorePromptDefault(btn.dataset.lang));
+  }
+  for (const btn of document.querySelectorAll(".restore-keywords")) {
+    btn.addEventListener("click", restoreKeywords);
   }
   for (const btn of document.querySelectorAll(".nav-item")) {
     btn.addEventListener("click", () => switchView(btn.dataset.view));

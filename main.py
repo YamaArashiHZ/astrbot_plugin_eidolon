@@ -52,6 +52,12 @@ ENHANCE_SYSTEM_PROMPT_EN = (
     "models. Output ONLY the polished prompt, no explanations or quotes."
 )
 
+# 自然语言触发:LLM 意图判断 system prompt(判断模型独立于润色模型)
+NL_JUDGE_SYSTEM_PROMPT = (
+    "你是图片生成意图判断助手。根据用户消息判断其是否包含生成、绘制、创作图片的意图。"
+    "只回复一个数字：1 表示是，0 表示否，不要输出任何其他内容。"
+)
+
 # 插件默认配置(插件页面编辑,存于 data/plugin_data/<plugin>/config.json)
 DEFAULT_CONFIG = {
     "seedream_api_key": "",
@@ -70,6 +76,9 @@ DEFAULT_CONFIG = {
     "request_timeout": 300,
     "enable_nl_trigger": False,
     "nl_min_prompt_len": 5,
+    "nl_trigger_mode": "keyword",
+    "nl_keywords": "画,绘制,生成,图片,图像,插画,海报,壁纸,头像,表情包,logo,照片,draw,image,picture,photo,illustration,wallpaper",
+    "nl_judge_provider_id": "",
     "enable_prompt_enhance": False,
     "enhance_lang": "zh",
     "enhance_provider_id": "",
@@ -343,10 +352,11 @@ class EidolonPlugin(Star):
             return error_response(f"获取模型列表失败：{e}", status_code=500)
 
     async def web_get_prompt_defaults(self):
-        """返回润色 system prompt 默认值(供前端「恢复默认」按钮使用)"""
+        """返回润色 system prompt 默认值与触发关键词默认值(供前端「恢复默认」按钮使用)"""
         return json_response({
             "zh": ENHANCE_SYSTEM_PROMPT_ZH,
             "en": ENHANCE_SYSTEM_PROMPT_EN,
+            "nl_keywords": DEFAULT_CONFIG["nl_keywords"],
         })
 
     async def web_get_quota_detail(self):
@@ -724,6 +734,46 @@ class EidolonPlugin(Star):
         return await self._call_seedream(prompt, aspect, image_size)
 
     # ------------------------------------------------------------------
+    # 自然语言触发:意图判断
+    # ------------------------------------------------------------------
+    def _keyword_hit(self, prompt: str) -> bool:
+        """检查消息是否命中自定义关键词(支持中英文逗号、顿号、换行分隔)"""
+        keywords = re.split(r"[,，、\n]+", str(self.config.get("nl_keywords", "")))
+        text = prompt.lower()
+        return any(k.strip() and k.strip().lower() in text for k in keywords)
+
+    async def _judge_image_request(self, prompt: str) -> bool:
+        """LLM 判断消息是否为生图请求;未配置模型/超时/失败一律放行(返回 False)"""
+        provider_id = (self.config.get("nl_judge_provider_id") or "").strip()
+        if not provider_id:
+            logger.warning("自然语言触发已开启但未配置 LLM 判断模型,消息已放行给正常对话")
+            return False
+        provider = self.context.get_provider_by_id(provider_id)
+        if provider is None:
+            logger.warning(f"未找到自然语言触发判断模型: {provider_id},消息已放行给正常对话")
+            return False
+        try:
+            resp = await asyncio.wait_for(
+                provider.text_chat(
+                    prompt=prompt,
+                    session_id="",
+                    system_prompt=NL_JUDGE_SYSTEM_PROMPT,
+                ),
+                timeout=20,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("自然语言触发判断超时,消息已放行给正常对话")
+            return False
+        except Exception as e:
+            logger.warning(f"自然语言触发判断失败: {e},消息已放行给正常对话")
+            return False
+        text = getattr(resp, "completion_text", "") or ""
+        answer = text.strip()
+        is_request = answer == "1"
+        logger.info(f"NL意图判断 结果={'是生图' if is_request else '非生图'} 模型回复: {text.strip()[:50]!r}")
+        return is_request
+
+    # ------------------------------------------------------------------
     # LLM 润色(可选,使用 AstrBot 已配置的模型提供商)
     # ------------------------------------------------------------------
     async def _enhance_prompt(self, prompt: str) -> str:
@@ -757,11 +807,12 @@ class EidolonPlugin(Star):
         is_admin = event.is_admin()
         group_id = event.get_group_id() or event.unified_msg_origin
         self._record_user_name(sender_id, event)
+        # 禁止 AstrBot 默认 LLM；事件在所有生图结果 yield 完成后由调用方截断。
+        event.should_call_llm(True)
 
         ok, reason = self._check_quota(group_id, sender_id, is_admin)
         if not ok:
             yield event.plain_result(reason)
-            event.stop_event()
             return
 
         aspect = aspect or str(self.config.get("aspect_ratio", "1:1"))
@@ -818,6 +869,7 @@ class EidolonPlugin(Star):
         prompt, aspect, image_size = self._parse_draw_request(
             event.message_str, prompt)
         if not prompt:
+            event.should_call_llm(True)
             yield event.plain_result(
                 "用法：/画图 <提示词> [-a 宽高比] [-s 分辨率]\n"
                 "示例：/画图 一只坐在云朵上的橘猫\n"
@@ -848,7 +900,20 @@ class EidolonPlugin(Star):
         prompt = re.sub(r"@\S+", "", event.message_str).strip()
         if not prompt or len(prompt) < int(self.config.get("nl_min_prompt_len", 5)):
             return
+        mode = str(self.config.get("nl_trigger_mode", "keyword"))
+        logger.info(
+            f"NL触发检查 group={event.get_group_id()} mode={mode} "
+            f"judge_provider={self.config.get('nl_judge_provider_id') or '未配置'} "
+            f"prompt={prompt[:50]!r}")
+        if mode == "llm":
+            # LLM 判断:非生图请求或判断不可用(未配置模型/失败)时,放行给正常对话
+            if not await self._judge_image_request(prompt):
+                return
+        elif not self._keyword_hit(prompt):
+            logger.info(f"NL关键词未命中,放行给正常对话: {prompt[:50]!r}")
+            return
         logger.info(f"NL触发生图 group={event.get_group_id()} prompt={prompt[:50]!r}")
+        event.should_call_llm(True)
         async for r in self._generate_and_send(event, prompt):
             yield r
         event.stop_event()
