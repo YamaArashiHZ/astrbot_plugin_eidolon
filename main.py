@@ -420,6 +420,7 @@ class EidolonPlugin(Star):
         return json_response({
             "total_limit": int(self.config.get("total_limit", 0)),
             "total_used": self._total_count,
+            "total_generated": sum(self._total_usage.values()),
             "per_user_limit": int(self.config.get("per_user_limit", 0)),
             "admin_ignore_limit": bool(self.config.get("admin_ignore_limit", True)),
             "admins": sorted(admins),
