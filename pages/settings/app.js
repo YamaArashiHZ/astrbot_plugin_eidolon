@@ -7,7 +7,7 @@ const TEXT_FIELDS = ["seedream_api_key", "seedream_model", "proxy"];
 const TEXTAREA_FIELDS = ["nl_keywords", "enhance_system_prompt_zh", "enhance_system_prompt_en"];
 const INT_FIELDS = [
   "max_concurrency", "cooldown_seconds", "request_timeout",
-  "total_limit", "per_user_limit", "nl_min_prompt_len",
+  "total_limit", "per_user_limit", "nl_min_prompt_len", "enhance_timeout",
 ];
 const BOOL_FIELDS = [
   "enable_proxy", "watermark", "admin_ignore_limit",
@@ -192,7 +192,9 @@ function collectConfig() {
   for (const k of TEXT_FIELDS) payload[k] = $(k).value.trim();
   for (const k of TEXTAREA_FIELDS) payload[k] = $(k).value;
   for (const k of INT_FIELDS) {
-    const v = parseInt($(k).value, 10);
+    const input = $(k);
+    if (!input) continue;
+    const v = parseInt(input.value, 10);
     payload[k] = Number.isFinite(v) ? v : 0;
   }
   for (const k of BOOL_FIELDS) payload[k] = $(k).checked;

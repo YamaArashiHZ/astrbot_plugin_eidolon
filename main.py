@@ -80,6 +80,7 @@ DEFAULT_CONFIG = {
     "nl_keywords": "画,绘制,生成,图片,图像,插画,海报,壁纸,头像,表情包,logo,照片,draw,image,picture,photo,illustration,wallpaper",
     "nl_judge_provider_id": "",
     "enable_prompt_enhance": False,
+    "enhance_timeout": 30,
     "enhance_lang": "zh",
     "enhance_provider_id": "",
     "enhance_system_prompt_zh": ENHANCE_SYSTEM_PROMPT_ZH,
@@ -790,11 +791,22 @@ class EidolonPlugin(Star):
         provider = self.context.get_provider_by_id(provider_id)
         if provider is None:
             raise RuntimeError(f"未找到提示词润色模型「{provider_id}」，请重新选择")
-        resp = await provider.text_chat(
-            prompt=prompt,
-            session_id="",
-            system_prompt=system_prompt,
-        )
+        try:
+            timeout = max(1.0, float(self.config.get("enhance_timeout", 30) or 30))
+        except (TypeError, ValueError):
+            timeout = 30.0
+        try:
+            resp = await asyncio.wait_for(
+                provider.text_chat(
+                    prompt=prompt,
+                    session_id="",
+                    system_prompt=system_prompt,
+                ),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(
+                f"提示词润色超时(>{timeout:.0f}秒)") from None
         text = getattr(resp, "completion_text", "") or ""
         return text.strip()
 

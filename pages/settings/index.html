@@ -248,12 +248,19 @@
                 </div>
               </div>
             </div>
-            <div class="field">
-              <span class="label">润色模型 <em class="sub">从 AstrBot 已配置的模型中选择</em></span>
-              <select id="enhance_provider_id">
-                <option value="">未选择</option>
-              </select>
-              <span class="hint">未选择模型或润色失败时，将直接使用原始提示词</span>
+            <div class="grid-2">
+              <div class="field">
+                <span class="label">润色模型 <em class="sub">从 AstrBot 已配置的模型中选择</em></span>
+                <select id="enhance_provider_id">
+                  <option value="">未选择</option>
+                </select>
+                <span class="hint">未选择模型或润色失败时，将直接使用原始提示词</span>
+              </div>
+              <label class="field">
+                <span class="label">润色超时（秒）</span>
+                <input type="number" id="enhance_timeout" min="1" />
+                <span class="hint">默认 30 秒，超时后使用原始提示词继续生图</span>
+              </label>
             </div>
             <div class="field">
               <span class="label">中文润色提示词 <em class="sub">发送给润色模型的系统提示词</em></span>
