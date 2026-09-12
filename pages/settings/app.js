@@ -12,7 +12,7 @@ const INT_FIELDS = [
 ];
 const BOOL_FIELDS = [
   "enable_proxy", "watermark", "admin_ignore_limit",
-  "enable_nl_trigger", "enable_prompt_enhance",
+  "enable_nl_trigger", "enable_prompt_enhance", "enable_img2img",
 ];
 // 分段/可视化选择器: 字段名 -> 容器 id
 const GROUP_FIELDS = {

@@ -35,6 +35,7 @@ ARK_BASE = "https://ark.cn-beijing.volces.com/api/v3"          # 火山方舟(Se
 PLUGIN_NAME = "astrbot_plugin_eidolon"
 VALID_ASPECTS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9"}
 VALID_SIZES = {"1K", "1.5K", "2K"}                            # Seedream 5.0 pro 档位
+IMG2IMG_MAX_IMAGES = 8                                        # 图生图最大参考图数量(固定)
 EXT_BY_MIME = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
 FLAG_RE = re.compile(r"(?:^|\s)[-－—](a|s)(?:\s+|=)(\S+)", re.IGNORECASE)
 DRAW_COMMAND_RE = re.compile(r"^\s*[!！/／]?\s*(?:画图|draw)(?:\s+|$)", re.IGNORECASE)
@@ -86,6 +87,7 @@ DEFAULT_CONFIG = {
     "enhance_provider_id": "",
     "enhance_system_prompt_zh": ENHANCE_SYSTEM_PROMPT_ZH,
     "enhance_system_prompt_en": ENHANCE_SYSTEM_PROMPT_EN,
+    "enable_img2img": True,
 }
 
 # 宽高比 -> prompt 自然语言描述(方式1:模型据描述判断生成尺寸)
@@ -684,6 +686,85 @@ class EidolonPlugin(Star):
             raise RuntimeError(f"图片数据解码失败：{e}") from e
         return str(path)
 
+    def _collect_reference_images(self, event: AstrMessageEvent) -> list[Comp.Image]:
+        """收集消息附带的参考图:优先同条消息中的图片,其次回复消息中的图片"""
+        chain = getattr(event.message_obj, "message", []) or []
+        images: list[Comp.Image] = []
+        seen: set[str] = set()
+        def add(img: Comp.Image):
+            key = f"{img.url or ''}|{img.file or ''}|{img.path or ''}"
+            if key and key in seen:
+                return
+            if key:
+                seen.add(key)
+            images.append(img)
+        for seg in chain:
+            if isinstance(seg, Comp.Image):
+                add(seg)
+        for seg in chain:
+            if isinstance(seg, Comp.Reply):
+                for sub in (getattr(seg, "chain", None) or []):
+                    if isinstance(sub, Comp.Image):
+                        add(sub)
+        return images
+
+    @staticmethod
+    def _sniff_image_mime(path: Path) -> str:
+        """通过文件头嗅探图片格式(小写);无法识别返回空串"""
+        try:
+            with open(path, "rb") as f:
+                head = f.read(16)
+        except OSError:
+            return ""
+        if head.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "png"
+        if head.startswith(b"\xff\xd8\xff"):
+            return "jpeg"
+        if head.startswith(b"GIF8"):
+            return "gif"
+        if head.startswith(b"BM"):
+            return "bmp"
+        if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+            return "webp"
+        if head[:4] in (b"II*\x00", b"MM\x00*"):
+            return "tiff"
+        if head[4:8] == b"ftyp" and head[8:12] in (b"heic", b"heix", b"hevc", b"hevx"):
+            return "heic"
+        return ""
+
+    async def _image_to_data_uri(self, img: Comp.Image) -> str:
+        """将消息图片组件转换为 data URI(base64),供 Seedream 参考图上传"""
+        local = ""
+        for cand in (getattr(img, "path", ""), getattr(img, "file", "")):
+            if not cand:
+                continue
+            if str(cand).startswith("file:///"):
+                local = str(cand)[8:]
+                break
+            if Path(cand).is_absolute() and Path(cand).is_file():
+                local = str(cand)
+                break
+        if not local:
+            try:
+                local = await img.convert_to_file_path()
+            except Exception as e:
+                raise RuntimeError(f"获取图片数据失败：{e}") from e
+        path = Path(local)
+        if not path.is_file():
+            raise RuntimeError("图片数据不存在，请重新发送")
+        size = path.stat().st_size
+        if size > 30 * 1024 * 1024:
+            raise RuntimeError("参考图超过 30MB 上限，请压缩后重试")
+        mime = self._sniff_image_mime(path)
+        if not mime:
+            suffix = path.suffix.lower().lstrip(".")
+            mime = {"jpg": "jpeg", "jpeg": "jpeg", "png": "png",
+                    "webp": "webp", "gif": "gif", "bmp": "bmp"}.get(suffix, "")
+        if not mime:
+            raise RuntimeError("不支持的参考图格式（支持 jpeg/png/webp 等常见格式）")
+        b64_data = base64.b64encode(path.read_bytes()).decode()
+        return f"data:image/{mime};base64,{b64_data}"
+
     async def _post(self, url: str, headers: dict, payload: dict) -> dict:
         """统一 POST:代理/超时/重试/错误分类,全程日志
 
@@ -765,13 +846,15 @@ class EidolonPlugin(Star):
         return FLAG_RE.sub("", text).strip(), aspect, image_size
 
     async def _call_seedream(self, prompt: str, aspect: str, image_size: str = "",
-                             api_key: str = "", model: str = "") -> tuple[str, str]:
+                             api_key: str = "", model: str = "",
+                             images: list[str] | None = None) -> tuple[str, str]:
         """火山方舟 Seedream 图片生成(OpenAI 兼容子集)
 
         官方文档要点:
           - size: 分辨率档位(1K/1.5K/2K),宽高比通过 prompt 自然语言描述(方式1,推荐)
           - response_format 默认 url(响应体小,避免大 JSON 传输超时),失败降级 b64_json
           - watermark/output_format 独立参数,无 seed 参数
+          - image: 参考图(图生图),支持 URL 或 data URI,可传单张或数组(多图融合)
           - 顶层 error 为整体错误;data[].error 为单图错误
         """
         key = (api_key or "").strip() or self._api_key()
@@ -794,6 +877,8 @@ class EidolonPlugin(Star):
             "output_format": output_format,
             "watermark": bool(self.config.get("watermark", True)),
         }
+        if images:
+            payload["image"] = images[0] if len(images) == 1 else images
         headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         try:
             data = await self._post(url, headers, payload)
@@ -842,9 +927,10 @@ class EidolonPlugin(Star):
         logger.info(f"图片下载完成 {path} ({len(resp.content)} bytes)")
         return str(path)
 
-    async def _generate_one(self, prompt: str, aspect: str, image_size: str) -> tuple[str, str]:
+    async def _generate_one(self, prompt: str, aspect: str, image_size: str,
+                            images: list[str] | None = None) -> tuple[str, str]:
         """适配层入口(当前仅 Seedream)"""
-        return await self._call_seedream(prompt, aspect, image_size)
+        return await self._call_seedream(prompt, aspect, image_size, images=images)
 
     # ------------------------------------------------------------------
     # 自然语言触发:意图判断
@@ -926,7 +1012,8 @@ class EidolonPlugin(Star):
     # 共享生图流程
     # ------------------------------------------------------------------
     async def _generate_and_send(self, event: AstrMessageEvent, prompt: str,
-                                 aspect: str = "", image_size: str = ""):
+                                 aspect: str = "", image_size: str = "",
+                                 images: list[Comp.Image] | None = None):
         sender_id = event.get_sender_id()
         is_admin = event.is_admin()
         group_id = event.get_group_id() or event.unified_msg_origin
@@ -939,8 +1026,24 @@ class EidolonPlugin(Star):
             yield event.plain_result(reason)
             return
 
+        explicit_aspect = bool(aspect)
         aspect = aspect or str(self.config.get("aspect_ratio", "1:1"))
         image_size = image_size or str(self.config.get("image_size", "2K"))
+
+        ref_images: list[str] = []
+        if images:
+            try:
+                for img in images:
+                    ref_images.append(await self._image_to_data_uri(img))
+            except RuntimeError as e:
+                yield event.plain_result(f"参考图处理失败：{e}")
+                return
+        if ref_images:
+            logger.info(
+                f"图生图 group={group_id} sender={sender_id} "
+                f"参考图={len(ref_images)}张 prompt={prompt!r}")
+        # 图生图时模型默认参考输入图构图,仅当用户显式指定 -a 时才附加宽高比描述
+        prompt_aspect = aspect if (not ref_images or explicit_aspect) else ""
 
         ticket, queue_position = await self._reserve_generation_slot()
         slot_acquired = ticket is None
@@ -953,11 +1056,17 @@ class EidolonPlugin(Star):
                 slot_acquired = True
 
             logger.info(f"生图 group={group_id} sender={sender_id} prompt={prompt!r}")
-            yield event.plain_result(
-                "已开始生成图片。高分辨率或复杂提示词通常需要 1 至 3 分钟，请耐心等待。")
+            if ref_images:
+                yield event.plain_result(
+                    f"已收到 {len(ref_images)} 张参考图，正在基于参考图生成。"
+                    "高分辨率或复杂修改通常需要 1 至 3 分钟，请耐心等待。")
+            else:
+                yield event.plain_result(
+                    "已开始生成图片。高分辨率或复杂提示词通常需要 1 至 3 分钟，请耐心等待。")
             success_count = 0
             try:
-                if self.config.get("enable_prompt_enhance", False):
+                # 图生图不做 LLM 润色(修改指令需保持原意),仅文生图可选润色
+                if not ref_images and self.config.get("enable_prompt_enhance", False):
                     try:
                         enhanced = await self._enhance_prompt(prompt)
                         if enhanced:
@@ -968,7 +1077,8 @@ class EidolonPlugin(Star):
                     except Exception as e:
                         logger.warning(f"提示词润色失败,回退原文: {e}")
                 started = time.time()
-                path, _mime = await self._generate_one(prompt, aspect, image_size)
+                path, _mime = await self._generate_one(
+                    prompt, prompt_aspect, image_size, ref_images or None)
                 success_count = 1
                 logger.info(f"出图成功 耗时 {time.time() - started:.1f}s 文件={path}")
                 active_path = Path(path).resolve()
@@ -999,21 +1109,30 @@ class EidolonPlugin(Star):
     # ------------------------------------------------------------------
     @filter.command("画图", alias={"draw"})
     async def draw(self, event: AstrMessageEvent, prompt: str = ""):
-        """文生图: /画图 <提示词> [-a 宽高比] [-s 分辨率]"""
+        """文生图/图生图: /画图 <提示词> [-a 宽高比] [-s 分辨率];附带或回复图片时自动图生图"""
         prompt, aspect, image_size = self._parse_draw_request(
             event.message_str, prompt)
+        images = []
+        if self.config.get("enable_img2img", True):
+            images = self._collect_reference_images(event)
+            if len(images) > IMG2IMG_MAX_IMAGES:
+                logger.info(
+                    f"参考图数量 {len(images)} 超过上限 {IMG2IMG_MAX_IMAGES},"
+                    f"已截取前 {IMG2IMG_MAX_IMAGES} 张")
+                images = images[:IMG2IMG_MAX_IMAGES]
         if not prompt:
             event.should_call_llm(True)
             yield event.plain_result(
                 "用法：/画图 <提示词> [-a 宽高比] [-s 分辨率]\n"
                 "示例：/画图 一只坐在云朵上的橘猫\n"
-                "      /画图 赛博朋克城市夜景 -a 16:9 -s 1.5K"
-            )
+                "      /画图 赛博朋克城市夜景 -a 16:9 -s 1.5K\n"
+                "图生图：提示词后附带图片或回复带图消息，将基于参考图生成")
             return
         logger.info(
             f"指令参数解析 aspect={aspect or '默认'} "
-            f"size={image_size or '默认'} prompt={prompt!r}")
-        async for r in self._generate_and_send(event, prompt, aspect, image_size):
+            f"size={image_size or '默认'} images={len(images)} prompt={prompt!r}")
+        async for r in self._generate_and_send(
+                event, prompt, aspect, image_size, images):
             yield r
         event.stop_event()
 
@@ -1046,8 +1165,16 @@ class EidolonPlugin(Star):
         elif not self._keyword_hit(prompt):
             logger.info(f"NL关键词未命中,放行给正常对话: {prompt[:50]!r}")
             return
-        logger.info(f"NL触发生图 group={event.get_group_id()} prompt={prompt[:50]!r}")
+        images = []
+        if self.config.get("enable_img2img", True):
+            images = self._collect_reference_images(event)
+            if len(images) > IMG2IMG_MAX_IMAGES:
+                logger.info(
+                    f"参考图数量 {len(images)} 超过上限 {IMG2IMG_MAX_IMAGES},"
+                    f"已截取前 {IMG2IMG_MAX_IMAGES} 张")
+                images = images[:IMG2IMG_MAX_IMAGES]
+        logger.info(f"NL触发生图 group={event.get_group_id()} images={len(images)} prompt={prompt[:50]!r}")
         event.should_call_llm(True)
-        async for r in self._generate_and_send(event, prompt):
+        async for r in self._generate_and_send(event, prompt, images=images):
             yield r
         event.stop_event()
