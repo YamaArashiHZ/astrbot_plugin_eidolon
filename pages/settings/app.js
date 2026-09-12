@@ -278,9 +278,9 @@ function setGroupValue(field, val) {
 
 // 根据生图意图判断方式切换相关字段的显示
 function updateNlModeUI() {
-  const llm = groupValues.nl_trigger_mode === "llm";
-  $("nl_keywords_field").classList.toggle("hidden", llm);
-  $("nl_judge_field").classList.toggle("hidden", !llm);
+  const tool = groupValues.nl_trigger_mode === "tool";
+  $("nl_keywords_field").classList.toggle("hidden", tool);
+  $("nl_tool_field").classList.toggle("hidden", !tool);
 }
 
 // ---------- 加载 / 渲染 ----------
@@ -305,7 +305,7 @@ async function loadProviders(cfg) {
     loadError = true;
     console.error("load providers:", e);
   }
-  for (const id of ["enhance_provider_id", "nl_judge_provider_id"]) {
+  for (const id of ["enhance_provider_id"]) {
     const sel = $(id);
     sel.innerHTML = "";
     if (loadError) {
@@ -403,7 +403,7 @@ function collectConfig() {
   }
   for (const k of BOOL_FIELDS) payload[k] = $(k).checked;
   Object.assign(payload, groupValues);
-  for (const id of ["enhance_provider_id", "nl_judge_provider_id"]) {
+  for (const id of ["enhance_provider_id"]) {
     const sel = $(id);
     payload[id] = (sel ? sel.value : "").trim();
   }
