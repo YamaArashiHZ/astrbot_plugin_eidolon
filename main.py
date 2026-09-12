@@ -21,14 +21,22 @@ import re
 import time
 import uuid
 from pathlib import Path
+from typing import Any
 
 import httpx
+from pydantic import Field
+from pydantic.dataclasses import dataclass
 
 import astrbot.api.message_components as Comp
 from astrbot.api import logger
 from astrbot.api.event import filter, AstrMessageEvent
+from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
 from astrbot.api.web import error_response, json_response, request
+from astrbot.core.agent.run_context import ContextWrapper
+from astrbot.core.agent.tool import FunctionTool, ToolExecResult, ToolSet
+from astrbot.core.astr_agent_context import AstrAgentContext
+from astrbot.core.message.message_event_result import MessageChain
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 
 ARK_BASE = "https://ark.cn-beijing.volces.com/api/v3"          # 火山方舟(Seedream)
@@ -53,10 +61,14 @@ ENHANCE_SYSTEM_PROMPT_EN = (
     "models. Output ONLY the polished prompt, no explanations or quotes."
 )
 
-# 自然语言触发:LLM 意图判断 system prompt(判断模型独立于润色模型)
-NL_JUDGE_SYSTEM_PROMPT = (
-    "你是图片生成意图判断助手。根据用户消息判断其是否包含生成、绘制、创作图片的意图。"
-    "只回复一个数字：1 表示是，0 表示否，不要输出任何其他内容。"
+# 自然语言触发:函数工具(由主对话模型自行判断是否生图,取代独立的 LLM 意图判断)
+DRAW_TOOL_NAME = "eidolon_draw"
+DRAW_TOOL_DESCRIPTION = (
+    "生成、绘制或修改图片,并直接把图片发送到当前会话。"
+    "当用户明确要求画图、生图、出图、改图(如换背景、换风格、把某物改成某物、"
+    "融合多张图)时调用本工具;用户只是在聊天中讨论图片、评价图片或询问绘画知识时不要调用。"
+    "prompt 要写成完整、具体、可直接用于图像生成的画面描述,"
+    "并整合对话上下文(例如用户此前提到的风格、主体或修改要求)。"
 )
 
 # 插件默认配置(插件页面编辑,存于 data/plugin_data/<plugin>/config.json)
@@ -80,7 +92,6 @@ DEFAULT_CONFIG = {
     "nl_min_prompt_len": 5,
     "nl_trigger_mode": "keyword",
     "nl_keywords": "画,绘制,生成,图片,图像,插画,海报,壁纸,头像,表情包,logo,照片,draw,image,picture,photo,illustration,wallpaper",
-    "nl_judge_provider_id": "",
     "enable_prompt_enhance": False,
     "enhance_timeout": 30,
     "enhance_lang": "zh",
@@ -101,6 +112,114 @@ ASPECT_DESC = {
     "2:3": "竖版构图,宽高比2:3 / portrait 2:3",
     "21:9": "超宽横版构图,宽高比21:9 / ultra-wide 21:9",
 }
+
+# 工具模式下,工具调用内最多同步等待生图的秒数;
+# 超过后工具先返回、生成任务继续在后台跑,避免超过 AstrBot 的 tool_call_timeout(默认 120 秒)
+TOOL_SYNC_WAIT_SECONDS = 90
+
+
+@dataclass
+class EidolonDrawTool(FunctionTool[AstrAgentContext]):
+    """生图函数工具:把「是否生图」的判断交给主对话模型本身。
+
+    取代了旧版「单独调用一次 LLM 做意图判断」的做法:模型本来就要处理这条消息,
+    由它带着完整会话上下文决定是否调用本工具,省去一次额外的 LLM 请求。
+    工具仅由插件在群内 @机器人 且开启自然语言触发时注入当前请求。
+    """
+
+    __pydantic_config__ = {"arbitrary_types_allowed": True}
+
+    plugin: Any = None
+    """插件实例(EidolonPlugin),由插件构造工具时注入。"""
+
+    name: str = DRAW_TOOL_NAME
+    description: str = DRAW_TOOL_DESCRIPTION
+    parameters: dict[str, Any] = Field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "prompt": {
+                    "type": "string",
+                    "description": (
+                        "完整、具体的画面描述(中文),直接作为图像生成提示词。"
+                        "需要包含主体、风格、构图、光线等可执行细节。"
+                    ),
+                },
+                "aspect_ratio": {
+                    "type": "string",
+                    "enum": sorted(VALID_ASPECTS),
+                    "description": "画面宽高比;不确定时留空,使用插件默认值。",
+                },
+                "image_size": {
+                    "type": "string",
+                    "enum": sorted(VALID_SIZES),
+                    "description": "输出分辨率档位;不确定时留空,使用插件默认值。",
+                },
+            },
+            "required": ["prompt"],
+        }
+    )
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], prompt: str,
+                   aspect_ratio: str = "", image_size: str = "") -> ToolExecResult:
+        plugin = self.plugin
+        event = getattr(getattr(context, "context", None), "event", None)
+        if plugin is None or event is None:
+            logger.warning("生图工具缺少插件或事件上下文,已拒绝本次调用")
+            return "生图工具当前不可用,请如实告知用户稍后再试。"
+
+        clean_prompt = (prompt or "").strip()
+        if not clean_prompt:
+            return "生图失败:prompt 为空。请先用一句话描述要生成的画面,再重新调用本工具。"
+
+        aspect = str(aspect_ratio or "").strip()
+        if aspect and aspect not in VALID_ASPECTS:
+            logger.warning(f"工具传入的宽高比不支持: {aspect!r},已回退插件默认值")
+            aspect = ""
+        image_size = str(image_size or "").strip()
+        if image_size and image_size not in VALID_SIZES:
+            logger.warning(f"工具传入的分辨率不支持: {image_size!r},已回退插件默认值")
+            image_size = ""
+
+        # 参考图只能来自消息本身(工具参数无法承载图片):同条消息的图片或引用回复的图片
+        images: list[Comp.Image] = []
+        if plugin.config.get("enable_img2img", True):
+            images = plugin._collect_reference_images(event)
+            if len(images) > IMG2IMG_MAX_IMAGES:
+                logger.info(
+                    f"参考图数量 {len(images)} 超过上限 {IMG2IMG_MAX_IMAGES},"
+                    f"已截取前 {IMG2IMG_MAX_IMAGES} 张")
+                images = images[:IMG2IMG_MAX_IMAGES]
+
+        # 前置校验配额/冷却:被拒绝时直接回话,避免先答应用户再发失败提示
+        is_admin = event.is_admin()
+        group_id = event.get_group_id() or event.unified_msg_origin
+        ok, reason = plugin._check_quota(group_id, event.get_sender_id(), is_admin)
+        if not ok:
+            logger.info(f"工具触发生图被限额拦截 group={group_id}: {reason}")
+            return f"生图被拒绝:{reason} 请如实转述给用户,不要声称已生成图片。"
+
+        logger.info(
+            f"工具触发生图 group={group_id} sender={event.get_sender_id()} "
+            f"images={len(images)} aspect={aspect or '默认'} size={image_size or '默认'} "
+            f"prompt={clean_prompt[:50]!r}")
+        task = asyncio.create_task(
+            plugin._run_tool_generation(event, clean_prompt, aspect, image_size, images))
+        plugin._track_tool_task(task)
+        done, _pending = await asyncio.wait({task}, timeout=TOOL_SYNC_WAIT_SECONDS)
+        if not done:
+            logger.info(f"生图仍在后台执行(>{TOOL_SYNC_WAIT_SECONDS}s),工具先返回")
+            return (
+                "图片仍在生成中,完成后插件会自动把图片发到群里。"
+                "请简短告知用户正在生成(例如「马上画好」),不要复述画面内容,也不要再次调用本工具。")
+        try:
+            return task.result()
+        except Exception as e:
+            logger.exception(f"工具生图任务异常: {e}")
+            return f"生图失败:{e}。请如实告知用户失败原因,不要声称图片已生成。"
+
+    def __repr__(self) -> str:
+        return f"EidolonDrawTool(name={self.name!r})"
 
 
 class EidolonPlugin(Star):
@@ -129,6 +248,10 @@ class EidolonPlugin(Star):
         self._today = ""
         self.usage_path = self.data_dir / "usage.json"
         self._load_usage()
+
+        # 自然语言触发(工具模式):工具实例按需注入请求,后台生图任务保持强引用
+        self._draw_tool = EidolonDrawTool(plugin=self)
+        self._tool_tasks: set[asyncio.Task] = set()
 
         # 插件页面后端 API
         context.register_web_api(
@@ -168,6 +291,7 @@ class EidolonPlugin(Star):
     def _load_config(self) -> dict:
         cfg = dict(DEFAULT_CONFIG)
         migrated = False
+        notes: list[str] = []
         try:
             if self.config_path.exists():
                 saved = json.loads(self.config_path.read_text(encoding="utf-8"))
@@ -178,13 +302,20 @@ class EidolonPlugin(Star):
                 if saved.get("request_timeout") == 90 and DEFAULT_CONFIG["request_timeout"] != 90:
                     cfg["request_timeout"] = DEFAULT_CONFIG["request_timeout"]
                     migrated = True
+                    notes.append(
+                        f"request_timeout 90 -> {DEFAULT_CONFIG['request_timeout']}")
+                # 旧模式迁移:独立 LLM 意图判断已被函数工具取代,原 llm 模式转为 tool 模式
+                if str(cfg.get("nl_trigger_mode", "")) == "llm":
+                    cfg["nl_trigger_mode"] = "tool"
+                    migrated = True
+                    notes.append("nl_trigger_mode llm -> tool")
         except Exception as e:
             logger.warning(f"配置读取失败,使用默认配置: {e}")
         if migrated:
             try:
                 self.config_path.write_text(
                     json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
-                logger.info("已迁移旧配置:request_timeout 90 -> %s", DEFAULT_CONFIG["request_timeout"])
+                logger.info("已迁移旧配置:%s", "; ".join(notes))
             except Exception:
                 pass
         return cfg
@@ -933,7 +1064,7 @@ class EidolonPlugin(Star):
         return await self._call_seedream(prompt, aspect, image_size, images=images)
 
     # ------------------------------------------------------------------
-    # 自然语言触发:意图判断
+    # 自然语言触发:工具模式(由主对话模型调用生图工具)
     # ------------------------------------------------------------------
     def _keyword_hit(self, prompt: str) -> bool:
         """检查消息是否命中自定义关键词(支持中英文逗号、顿号、换行分隔)"""
@@ -941,36 +1072,89 @@ class EidolonPlugin(Star):
         text = prompt.lower()
         return any(k.strip() and k.strip().lower() in text for k in keywords)
 
-    async def _judge_image_request(self, prompt: str) -> bool:
-        """LLM 判断消息是否为生图请求;未配置模型/超时/失败一律放行(返回 False)"""
-        provider_id = (self.config.get("nl_judge_provider_id") or "").strip()
-        if not provider_id:
-            logger.warning("自然语言触发已开启但未配置 LLM 判断模型,消息已放行给正常对话")
+    def _tool_mode_enabled(self) -> bool:
+        """自然语言触发是否处于工具模式"""
+        return (bool(self.config.get("enable_nl_trigger", False))
+                and str(self.config.get("nl_trigger_mode", "keyword")) == "tool")
+
+    def _nl_draw_candidate(self, event: AstrMessageEvent) -> bool:
+        """群内 @机器人 且提示词长度达标时,才把生图工具挂到本次请求上"""
+        if not event.get_group_id():
             return False
-        provider = self.context.get_provider_by_id(provider_id)
-        if provider is None:
-            logger.warning(f"未找到自然语言触发判断模型: {provider_id},消息已放行给正常对话")
+        chain = getattr(event.message_obj, "message", []) or []
+        at_me = any(
+            isinstance(seg, Comp.At) and str(getattr(seg, "qq", "")) == str(event.get_self_id())
+            for seg in chain
+        )
+        if not at_me:
             return False
+        text = re.sub(r"@\S+", "", event.message_str).strip()
         try:
-            resp = await asyncio.wait_for(
-                provider.text_chat(
-                    prompt=prompt,
-                    session_id="",
-                    system_prompt=NL_JUDGE_SYSTEM_PROMPT,
-                ),
-                timeout=20,
-            )
-        except asyncio.TimeoutError:
-            logger.warning("自然语言触发判断超时,消息已放行给正常对话")
-            return False
+            min_len = int(self.config.get("nl_min_prompt_len", 5))
+        except (TypeError, ValueError):
+            min_len = 5
+        return len(text) >= min_len
+
+    def _track_tool_task(self, task: asyncio.Task) -> None:
+        """持有后台生图任务的强引用,避免被垃圾回收;结束后自动移除"""
+        self._tool_tasks.add(task)
+        task.add_done_callback(self._tool_tasks.discard)
+
+    async def _run_tool_generation(self, event: AstrMessageEvent, prompt: str, aspect: str,
+                                   image_size: str, images: list[Comp.Image] | None) -> str:
+        """工具触发的生图:结果直接发送到会话,并把结论作为工具返回值交给模型"""
+        image_sent = False
+        texts: list[str] = []
+        try:
+            async for result in self._generate_results(
+                    event, prompt, aspect, image_size, images):
+                chain = list(getattr(result, "chain", []) or [])
+                if not chain:
+                    continue
+                if any(isinstance(seg, Comp.Image) for seg in chain):
+                    image_sent = True
+                await event.send(MessageChain(chain))
+                text = "".join(
+                    seg.text for seg in chain
+                    if isinstance(seg, Comp.Plain) and getattr(seg, "text", ""))
+                if text:
+                    texts.append(text)
         except Exception as e:
-            logger.warning(f"自然语言触发判断失败: {e},消息已放行给正常对话")
-            return False
-        text = getattr(resp, "completion_text", "") or ""
-        answer = text.strip()
-        is_request = answer == "1"
-        logger.info(f"NL意图判断 结果={'是生图' if is_request else '非生图'} 模型回复: {text.strip()[:50]!r}")
-        return is_request
+            logger.exception(f"工具触发生图异常: {e}")
+            return f"生图失败:{e}。请如实告知用户失败原因,不要声称图片已生成。"
+        if image_sent:
+            return (
+                "图片已生成并发送到当前会话。请用一句话简短回应(例如「画好了」),"
+                "不要重复描述画面内容,也不要再次调用本工具。")
+        if texts:
+            return (
+                f"生图未成功,已把原因发送给用户:{' '.join(texts)}"
+                "请如实转述失败原因,不要声称图片已生成。")
+        return "生图没有产生任何结果,请如实告知用户生成失败。"
+
+    @filter.on_llm_request()
+    async def inject_draw_tool(self, event: AstrMessageEvent, req: ProviderRequest):
+        """工具模式:群内 @机器人 时把生图工具注入本次请求的工具列表。
+
+        只在必要时挂载,避免工具污染所有会话,也避免模型在普通闲聊里自发画图。
+        """
+        if not self._tool_mode_enabled() or not self._nl_draw_candidate(event):
+            return
+        if req.func_tool is None:
+            req.func_tool = ToolSet()
+        req.func_tool.add_tool(self._draw_tool)
+        logger.info(
+            f"已注入生图工具 group={event.get_group_id()} "
+            f"prompt={re.sub(r'@\S+', '', event.message_str).strip()[:50]!r}")
+
+    async def terminate(self):
+        """插件卸载:取消尚未完成的工具生图任务"""
+        pending = [t for t in self._tool_tasks if not t.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        self._tool_tasks.clear()
 
     # ------------------------------------------------------------------
     # LLM 润色(可选,使用 AstrBot 已配置的模型提供商)
@@ -1011,15 +1195,18 @@ class EidolonPlugin(Star):
     # ------------------------------------------------------------------
     # 共享生图流程
     # ------------------------------------------------------------------
-    async def _generate_and_send(self, event: AstrMessageEvent, prompt: str,
-                                 aspect: str = "", image_size: str = "",
-                                 images: list[Comp.Image] | None = None):
+    async def _generate_results(self, event: AstrMessageEvent, prompt: str,
+                                aspect: str = "", image_size: str = "",
+                                images: list[Comp.Image] | None = None):
+        """核心生图流程:产出待发送的结果,由调用方决定发送方式。
+
+        - 指令/关键词触发:由 _generate_and_send 直接作为事件结果返回;
+        - 工具触发:由 _run_tool_generation 通过 event.send 主动发送。
+        """
         sender_id = event.get_sender_id()
         is_admin = event.is_admin()
         group_id = event.get_group_id() or event.unified_msg_origin
         self._record_user_name(sender_id, event)
-        # 禁止 AstrBot 默认 LLM；事件在所有生图结果 yield 完成后由调用方截断。
-        event.should_call_llm(True)
 
         ok, reason = self._check_quota(group_id, sender_id, is_admin)
         if not ok:
@@ -1104,6 +1291,16 @@ class EidolonPlugin(Star):
             elif ticket is not None:
                 await self._remove_queued_ticket(ticket)
 
+    async def _generate_and_send(self, event: AstrMessageEvent, prompt: str,
+                                 aspect: str = "", image_size: str = "",
+                                 images: list[Comp.Image] | None = None):
+        """指令/关键词触发生图:禁止默认 LLM 回复,结果由调用方截断事件后发出"""
+        # 禁止 AstrBot 默认 LLM；事件在所有生图结果 yield 完成后由调用方截断。
+        event.should_call_llm(True)
+        async for result in self._generate_results(
+                event, prompt, aspect, image_size, images):
+            yield result
+
     # ------------------------------------------------------------------
     # 触发方式一:指令
     # ------------------------------------------------------------------
@@ -1138,10 +1335,15 @@ class EidolonPlugin(Star):
 
     # ------------------------------------------------------------------
     # 触发方式二:群内 @机器人 自然语言(可选)
+    #   - keyword 模式:命中关键词由插件直接生图(不进入 LLM)
+    #   - tool 模式:不拦截消息,改由 inject_draw_tool 把生图工具交给模型自行判断
     # ------------------------------------------------------------------
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group_message(self, event: AstrMessageEvent):
         if not self.config.get("enable_nl_trigger", False):
+            return
+        if self._tool_mode_enabled():
+            # 工具模式:消息交给 AstrBot 常规对话流程,由模型决定是否调用生图工具
             return
         chain = getattr(event.message_obj, "message", [])
         at_me = any(
@@ -1153,16 +1355,9 @@ class EidolonPlugin(Star):
         prompt = re.sub(r"@\S+", "", event.message_str).strip()
         if not prompt or len(prompt) < int(self.config.get("nl_min_prompt_len", 5)):
             return
-        mode = str(self.config.get("nl_trigger_mode", "keyword"))
         logger.info(
-            f"NL触发检查 group={event.get_group_id()} mode={mode} "
-            f"judge_provider={self.config.get('nl_judge_provider_id') or '未配置'} "
-            f"prompt={prompt[:50]!r}")
-        if mode == "llm":
-            # LLM 判断:非生图请求或判断不可用(未配置模型/失败)时,放行给正常对话
-            if not await self._judge_image_request(prompt):
-                return
-        elif not self._keyword_hit(prompt):
+            f"NL触发检查 group={event.get_group_id()} mode=keyword prompt={prompt[:50]!r}")
+        if not self._keyword_hit(prompt):
             logger.info(f"NL关键词未命中,放行给正常对话: {prompt[:50]!r}")
             return
         images = []

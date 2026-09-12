@@ -245,9 +245,9 @@
               <span class="label">生图意图判断</span>
               <div class="segmented" id="nl_trigger_mode_group">
                 <button type="button" data-val="keyword">自定义关键词</button>
-                <button type="button" data-val="llm">LLM 判断</button>
+                <button type="button" data-val="tool">工具调用</button>
               </div>
-              <span class="hint">判断 @机器人 消息是否为生图请求；非生图请求将放行给正常对话</span>
+              <span class="hint">关键词：命中关键词即由插件直接生图；工具调用：把生图工具交给对话模型，由模型结合上下文自行判断是否生图，不再额外调用一次模型做意图判断</span>
             </div>
             <div class="field" id="nl_keywords_field">
               <span class="label">触发关键词 <em class="sub">用逗号分隔，命中任一关键词即视为生图请求</em></span>
@@ -256,11 +256,8 @@
                 <button type="button" class="btn ghost small restore-keywords">恢复默认</button>
               </div>
             </div>
-            <div class="field" id="nl_judge_field">
-              <span class="label">LLM 判断模型 <em class="sub">独立于润色模型；未配置时自然语言触发不生效</em></span>
-              <select id="nl_judge_provider_id">
-                <option value="">未选择</option>
-              </select>
+            <div class="field hidden" id="nl_tool_field">
+              <span class="hint">工具调用依赖对话模型支持函数调用（Function Calling）。模型不支持时不会触发生图，请改用关键词模式；工具模式下 @机器人 的普通聊天不会产生额外的模型请求</span>
             </div>
             <span class="hint">关闭后，@机器人消息将继续交由 AstrBot 的常规对话流程处理</span>
           </div>
